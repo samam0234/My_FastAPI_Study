@@ -6,7 +6,7 @@
 
 | 영역 | 내용 | 대응 study |
 |---|---|---|
-| 프로젝트 구조 | 도메인별 폴더(`core/`, `posts/`, `users/`), 폴더마다 `models/schemas/repository/service/router` 계층 | study1, study3, study11 |
+| 프로젝트 구조 | 레이어별 폴더(`models/`, `schemas/`, `repositories/`, `services/`, `routers/`), 폴더마다 기능별 파일(`post.py`, `user.py`) | study1, study3, study11 |
 | CRUD | Path/Query 파라미터 + Pydantic 스키마 기반 `/posts` CRUD | study2 |
 | 의존성 주입 | 페이지네이션 의존성, `APIRouter` 분리 | study3 |
 | DB 연동 | SQLAlchemy(SQLite 개발용, `.env`로 MySQL 전환 가능) | study4 |
@@ -16,7 +16,7 @@
 | CORS / 예외 처리 | `CORSMiddleware`, 전역 예외 핸들러로 에러 포맷 통일 | study8 |
 | 테스트 | `pytest` + `TestClient`, 테스트 전용 인메모리 DB | study9 |
 | 설정 관리 | `pydantic-settings` 기반 `.env` 분리, 페이지네이션 응답(`items/total/skip/limit`) | study10 |
-| 도메인별 폴더링 | `posts/`, `users/` 도메인 분리 + repository(DB)/service(비즈니스 로직) 계층 분리 | study11 |
+| 레이어별 폴더링 | `models/repositories/schemas/services/routers` 레이어 분리, repository(DB)/service(비즈니스 로직) 분리 | study11 |
 
 ## 실행 방법
 
@@ -58,25 +58,32 @@ project/
 ├── requirements.txt
 ├── .env.example
 ├── app/
-│   ├── main.py             # 앱 조립: 미들웨어, 예외 핸들러, 라우터 등록
-│   ├── core/                # 도메인에 속하지 않는 공용 인프라
-│   │   ├── config.py          # pydantic-settings 기반 환경설정
-│   │   ├── database.py        # SQLAlchemy Engine/Session
-│   │   ├── security.py        # 비밀번호 해시, JWT 인코딩(범용 유틸)
-│   │   ├── exceptions.py      # 전역 예외 핸들러
-│   │   └── dependencies.py    # Pagination 등 여러 도메인이 공유하는 의존성
-│   ├── posts/                # "게시글" 도메인
-│   │   ├── models.py           # Post (SQLAlchemy)
-│   │   ├── schemas.py          # PostCreate/PostResponse/PaginatedPosts
-│   │   ├── repository.py       # DB 접근만 (SQL 쿼리)
-│   │   ├── service.py          # 비즈니스 로직 (404 변환, 소유권 검사, 백그라운드 작업)
-│   │   └── router.py            # HTTP 계층
-│   └── users/                 # "회원/인증" 도메인 (posts와 동일한 계층 구성)
-│       ├── models.py, schemas.py, repository.py, service.py, router.py
-└── tests/                     # pytest (posts/auth 통합 테스트)
+│   ├── __init__.py
+│   ├── main.py               # 앱 조립: 미들웨어, 예외 핸들러, 라우터 등록
+│   ├── config.py              # pydantic-settings 기반 환경설정
+│   ├── database.py            # SQLAlchemy Engine/Session
+│   ├── security.py             # 비밀번호 해시, JWT 인코딩(범용 유틸)
+│   ├── exceptions.py           # 전역 예외 핸들러
+│   ├── dependencies.py         # Pagination 등 여러 라우터가 공유하는 의존성
+│   ├── models/                 # 모델단
+│   │   ├── post.py
+│   │   └── user.py
+│   ├── schemas/                # 스키마단
+│   │   ├── post.py
+│   │   └── user.py
+│   ├── repositories/           # 레포지토리단 (DB 접근만)
+│   │   ├── post.py
+│   │   └── user.py
+│   ├── services/                # 서비스단 (비즈니스 로직)
+│   │   ├── post.py
+│   │   └── user.py
+│   └── routers/                 # 라우터단 (HTTP 계층)
+│       ├── post.py
+│       └── auth.py
+└── tests/                       # pytest (posts/auth 통합 테스트)
 ```
 
-`posts`가 `users.models.User`/`users.service.get_current_user`를 가져다 쓰긴 하지만, 반대로 `users`는 `posts`를 전혀 모릅니다 — 의존 방향이 한쪽으로만 흐르도록 설계했습니다. 자세한 설계 이유는 [study11.md](../study11.md)를 참고하세요.
+`routers → services → repositories → models` 순서로만 의존합니다. `services/post.py`가 `models/user.py`, `services/user.py`를 가져다 쓰긴 하지만, 반대로 `services/user.py`가 `post`를 참조하는 일은 없습니다. 자세한 설계 이유는 [study11.md](../study11.md)를 참고하세요.
 
 ## 확장 아이디어 (다음 단계)
 

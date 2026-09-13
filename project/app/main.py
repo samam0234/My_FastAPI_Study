@@ -5,20 +5,19 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import get_settings
-from app.core.database import Base, SessionLocal, engine
-from app.core.exceptions import (
+from app.config import get_settings
+from app.database import Base, SessionLocal, engine
+from app.exceptions import (
     http_exception_handler,
     unhandled_exception_handler,
     validation_exception_handler,
 )
-from app.posts.models import Post
-from app.posts.router import router as posts_router
-from app.users.router import router as auth_router
+from app.models.post import Post
+from app.routers import auth, post
 
 settings = get_settings()
 
-# Post/User 모델은 각 도메인 router를 import하는 시점에 이미 Base.metadata에 등록된다.
+# Post/User 모델은 각 라우터 모듈을 import하는 시점에 이미 Base.metadata에 등록된다.
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -39,8 +38,8 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
 
-app.include_router(posts_router)
-app.include_router(auth_router)
+app.include_router(post.router)
+app.include_router(auth.router)
 
 
 def _seed_initial_posts() -> None:

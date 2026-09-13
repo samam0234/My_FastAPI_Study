@@ -4,14 +4,14 @@
 
 ## 1. `demo/`와 `project/`의 차이
 
-- `demo/`: study1의 파일 하나짜리 앱에서 시작해, study11까지 매 단계 "이번에 뭘 배웠고 무엇이 바뀌었는지"를 보여주기 위해 점진적으로 리팩터링해온 **학습용 기록**입니다. (`/async-demo/*`, `/debug/boom` 같은 개념 확인용 라우트도 `practice/` 아래 남아있습니다.)
-- `project/`: 그 학습 결과를 반영해 **처음부터 완성된 구조**로 다시 만든 결과물입니다. 도메인별 폴더(`core/`, `posts/`, `users/`) + `repository`/`service` 계층 분리, 설정 분리(`.env`), DB 연동, JWT 인증, CORS, 전역 예외 처리, 테스트가 첫 커밋부터 모두 갖춰져 있고, 순수 학습/실험용 라우트는 제외했습니다.
+- `demo/`: study1의 파일 하나짜리 앱에서 시작해, study11까지 매 단계 "이번에 뭘 배웠고 무엇이 바뀌었는지"를 보여주기 위해 점진적으로 리팩터링해온 **학습용 기록**입니다. (`routers/async_demo.py`, `/debug/boom` 같은 개념 확인용 라우트도 남아있습니다.)
+- `project/`: 그 학습 결과를 반영해 **처음부터 완성된 구조**로 다시 만든 결과물입니다. 레이어별 폴더(`models/`, `schemas/`, `repositories/`, `services/`, `routers/`) 분리, 설정 분리(`.env`), DB 연동, JWT 인증, CORS, 전역 예외 처리, 테스트가 첫 커밋부터 모두 갖춰져 있고, 순수 학습/실험용 라우트는 제외했습니다.
 
 ## 2. 적용한 기능과 대응 study
 
 | 기능 | 설명 | 대응 study |
 |---|---|---|
-| `app/` 패키지 구조 | 도메인별 폴더(`core/`, `posts/`, `users/`), 폴더마다 `models/schemas/repository/service/router` 계층 | study1, study3, study11 |
+| `app/` 패키지 구조 | 레이어별 폴더(`models/`, `schemas/`, `repositories/`, `services/`, `routers/`), 폴더마다 기능별 파일(`post.py`, `user.py`) | study1, study3, study11 |
 | `/posts` CRUD | Path/Query 파라미터 + Pydantic 스키마(`PostCreate`/`PostResponse`) | study2 |
 | 의존성 주입 | `Pagination`(페이지네이션), `get_current_user`(인증) | study3, study7 |
 | SQLAlchemy 연동 | `Post`, `User` 모델, `.env`의 `DATABASE_URL`로 SQLite/MySQL 전환 가능 | study4 |
@@ -21,9 +21,9 @@
 | CORS / 예외 핸들러 | `CORSMiddleware`, `{"detail": ...}` 공통 에러 포맷 | study8 |
 | 테스트 | `pytest` + `TestClient`, 인메모리 DB로 격리된 9개 테스트 | study9 |
 | 설정 관리 | `pydantic-settings`로 `SECRET_KEY`/`DATABASE_URL`/`CORS_ORIGINS` 등을 `.env`로 분리, `items/total/skip/limit` 페이지네이션 응답 | study10 |
-| 도메인별 폴더링 | `posts`/`users` 도메인 분리, DB 접근(`repository`)과 비즈니스 로직(`service`) 분리 | study11 |
+| 레이어별 폴더링 | `models/repositories/schemas/services/routers` 분리, DB 접근(`repositories`)과 비즈니스 로직(`services`) 분리 | study11 |
 
-`project/app/` 내부 각 파일의 코드는 `demo/`의 study11 시점 코드와 거의 동일합니다 — 다른 점은 학습용으로만 존재했던 `practice/async_demo.py`, `/debug/boom` 라우트를 제외하고, `/`를 간단한 헬스 체크로 정리했다는 것입니다. 자세한 코드 설명은 각 study 문서를, 실행 방법은 [project/README.md](../project/README.md)를 참고하세요.
+`project/app/` 내부 각 파일의 코드는 `demo/`의 study11 시점 코드와 거의 동일합니다 — 다른 점은 학습용으로만 존재했던 `routers/async_demo.py`, `/debug/boom` 라우트를 제외하고, `/`를 간단한 헬스 체크로 정리했다는 것입니다. 자세한 코드 설명은 각 study 문서를, 실행 방법은 [project/README.md](../project/README.md)를 참고하세요.
 
 ## 3. 실행 및 동작 확인
 
