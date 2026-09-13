@@ -1,11 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-from app.config import get_settings
+from app.core.config import get_settings
 
 settings = get_settings()
 
-# study10부터는 연결 문자열을 .env(DATABASE_URL)에서 읽어온다.
+# 연결 문자열을 .env(DATABASE_URL)에서 읽어온다.
 # SQLite면 "sqlite:///"로 시작하고, MySQL이면 "mysql+pymysql://"로 시작한다.
 SQLALCHEMY_DATABASE_URL = settings.database_url
 

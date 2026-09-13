@@ -1,12 +1,12 @@
 # Mini Board API (studyFinal 프로젝트)
 
-`study0.md` ~ `study10.md`에서 배운 내용을 모두 적용해 만든 완결된 미니 게시판 API입니다. `demo/`에서 단계별로 실습했던 기능을, 처음부터 한 번에 갖춘 형태로 다시 설계했습니다.
+`study0.md` ~ `study11.md`에서 배운 내용을 모두 적용해 만든 완결된 미니 게시판 API입니다. `demo/`에서 단계별로 실습했던 기능을, 처음부터 한 번에 갖춘 형태로 다시 설계했습니다.
 
 ## 기능 요약
 
 | 영역 | 내용 | 대응 study |
 |---|---|---|
-| 프로젝트 구조 | `app/` 패키지(`routers/`, `schemas.py`, `models.py`, `database.py`, `dependencies.py`) | study1, study3 |
+| 프로젝트 구조 | 도메인별 폴더(`core/`, `posts/`, `users/`), 폴더마다 `models/schemas/repository/service/router` 계층 | study1, study3, study11 |
 | CRUD | Path/Query 파라미터 + Pydantic 스키마 기반 `/posts` CRUD | study2 |
 | 의존성 주입 | 페이지네이션 의존성, `APIRouter` 분리 | study3 |
 | DB 연동 | SQLAlchemy(SQLite 개발용, `.env`로 MySQL 전환 가능) | study4 |
@@ -16,6 +16,7 @@
 | CORS / 예외 처리 | `CORSMiddleware`, 전역 예외 핸들러로 에러 포맷 통일 | study8 |
 | 테스트 | `pytest` + `TestClient`, 테스트 전용 인메모리 DB | study9 |
 | 설정 관리 | `pydantic-settings` 기반 `.env` 분리, 페이지네이션 응답(`items/total/skip/limit`) | study10 |
+| 도메인별 폴더링 | `posts/`, `users/` 도메인 분리 + repository(DB)/service(비즈니스 로직) 계층 분리 | study11 |
 
 ## 실행 방법
 
@@ -56,21 +57,26 @@ uvicorn app.main:app --reload
 project/
 ├── requirements.txt
 ├── .env.example
-└── app/
-    ├── main.py           # 앱 조립: 미들웨어, 예외 핸들러, 라우터 등록
-    ├── config.py          # pydantic-settings 기반 환경설정
-    ├── database.py        # SQLAlchemy Engine/Session
-    ├── models.py          # Post, User 모델
-    ├── schemas.py         # Pydantic 요청/응답 스키마
-    ├── security.py        # 비밀번호 해시, JWT 발급
-    ├── dependencies.py    # Pagination, get_current_user 등 의존성
-    ├── exceptions.py      # 전역 예외 핸들러
-    ├── store.py           # DB 접근 계층(CRUD 함수)
-    └── routers/
-        ├── posts.py
-        └── auth.py
-└── tests/                 # pytest (posts/auth 통합 테스트)
+├── app/
+│   ├── main.py             # 앱 조립: 미들웨어, 예외 핸들러, 라우터 등록
+│   ├── core/                # 도메인에 속하지 않는 공용 인프라
+│   │   ├── config.py          # pydantic-settings 기반 환경설정
+│   │   ├── database.py        # SQLAlchemy Engine/Session
+│   │   ├── security.py        # 비밀번호 해시, JWT 인코딩(범용 유틸)
+│   │   ├── exceptions.py      # 전역 예외 핸들러
+│   │   └── dependencies.py    # Pagination 등 여러 도메인이 공유하는 의존성
+│   ├── posts/                # "게시글" 도메인
+│   │   ├── models.py           # Post (SQLAlchemy)
+│   │   ├── schemas.py          # PostCreate/PostResponse/PaginatedPosts
+│   │   ├── repository.py       # DB 접근만 (SQL 쿼리)
+│   │   ├── service.py          # 비즈니스 로직 (404 변환, 소유권 검사, 백그라운드 작업)
+│   │   └── router.py            # HTTP 계층
+│   └── users/                 # "회원/인증" 도메인 (posts와 동일한 계층 구성)
+│       ├── models.py, schemas.py, repository.py, service.py, router.py
+└── tests/                     # pytest (posts/auth 통합 테스트)
 ```
+
+`posts`가 `users.models.User`/`users.service.get_current_user`를 가져다 쓰긴 하지만, 반대로 `users`는 `posts`를 전혀 모릅니다 — 의존 방향이 한쪽으로만 흐르도록 설계했습니다. 자세한 설계 이유는 [study11.md](../study11.md)를 참고하세요.
 
 ## 확장 아이디어 (다음 단계)
 
