@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.database import Base, get_db
+from app.core.database import Base, get_db
 from app.main import app
 
 # 실제 서비스용 demo.db 대신, 테스트 전용 인메모리 SQLite를 사용한다.

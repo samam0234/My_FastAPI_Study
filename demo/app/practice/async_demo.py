@@ -1,3 +1,7 @@
+"""study6 개념 확인용 라우트 모음. 실제 도메인이 아니라 async/blocking 비교 실습 전용이라
+posts/users 같은 도메인 폴더와 분리해 practice/ 아래에 둔다.
+"""
+
 import asyncio
 import time
 

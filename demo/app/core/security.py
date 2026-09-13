@@ -4,7 +4,7 @@ from typing import Optional
 from jose import jwt
 from passlib.context import CryptContext
 
-from app.config import get_settings
+from app.core.config import get_settings
 
 # bcrypt는 OS별로 컴파일된 확장이 필요해 환경에 따라 설치가 까다로울 수 있어,
 # 순수 파이썬으로 동작하는 pbkdf2_sha256을 사용합니다. 운영에서는 bcrypt/argon2도 흔히 씁니다.
