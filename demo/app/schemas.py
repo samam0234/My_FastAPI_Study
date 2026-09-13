@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -11,6 +13,7 @@ class PostResponse(PostCreate):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    author_id: Optional[int] = None
 
 
 class UserCreate(BaseModel):
@@ -23,3 +26,8 @@ class UserResponse(BaseModel):
 
     id: int
     username: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str

@@ -1,12 +1,12 @@
 import time
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Path, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, status
 from sqlalchemy.orm import Session
 
-from app import store
+from app import models, store
 from app.database import get_db
-from app.dependencies import Pagination, log_request_time
+from app.dependencies import Pagination, get_current_user, log_request_time
 from app.schemas import PostCreate, PostResponse
 
 router = APIRouter(
@@ -43,19 +43,45 @@ def notify_new_post(title: str) -> None:
 
 
 @router.post("", response_model=PostResponse, status_code=201)
-def create_post(post: PostCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    created = store.create_post(db, post)
+def create_post(
+    post: PostCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    created = store.create_post(db, post, author_id=current_user.id)
     # response_model 직렬화 이후, 응답을 클라이언트로 보낸 뒤에 실행된다.
     # 클라이언트는 notify_new_post()가 끝나기를 기다리지 않는다.
     background_tasks.add_task(notify_new_post, created.title)
     return created
 
 
+def _check_owner(post: models.Post, current_user: models.User) -> None:
+    if post.author_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="본인이 작성한 글만 수정/삭제할 수 있습니다.",
+        )
+
+
 @router.put("/{post_id}", response_model=PostResponse)
-def update_post(post_id: int, post: PostCreate, db: Session = Depends(get_db)):
+def update_post(
+    post_id: int,
+    post: PostCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    existing = store.get_post_or_404(db, post_id)
+    _check_owner(existing, current_user)
     return store.update_post(db, post_id, post)
 
 
 @router.delete("/{post_id}", status_code=204)
-def delete_post(post_id: int, db: Session = Depends(get_db)):
+def delete_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    existing = store.get_post_or_404(db, post_id)
+    _check_owner(existing, current_user)
     store.delete_post(db, post_id)

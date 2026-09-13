@@ -17,8 +17,8 @@ def get_post_or_404(db: Session, post_id: int) -> models.Post:
     return post
 
 
-def create_post(db: Session, post: PostCreate) -> models.Post:
-    new_post = models.Post(**post.model_dump())
+def create_post(db: Session, post: PostCreate, author_id: int) -> models.Post:
+    new_post = models.Post(**post.model_dump(), author_id=author_id)
     db.add(new_post)
     db.commit()
     db.refresh(new_post)
