@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments (demo/, project/ each have their own)
+.venv/
+venv/
+
+# FastAPI / SQLAlchemy
+*.db
+*.sqlite3
+*.log
+
+# Env files
+.env
+
+# Pytest
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
