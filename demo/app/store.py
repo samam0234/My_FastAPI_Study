@@ -2,7 +2,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app import models
-from app.schemas import PostCreate
+from app.schemas import PostCreate, UserCreate
+from app.security import hash_password
 
 
 def list_posts(db: Session) -> list[models.Post]:
@@ -38,3 +39,17 @@ def delete_post(db: Session, post_id: int) -> None:
     existing = get_post_or_404(db, post_id)
     db.delete(existing)
     db.commit()
+
+
+def get_user_by_username(db: Session, username: str) -> models.User | None:
+    return db.query(models.User).filter(models.User.username == username).first()
+
+
+def create_user(db: Session, user: UserCreate) -> models.User:
+    if get_user_by_username(db, user.username) is not None:
+        raise HTTPException(status_code=400, detail="이미 존재하는 username입니다.")
+    new_user = models.User(username=user.username, hashed_password=hash_password(user.password))
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
