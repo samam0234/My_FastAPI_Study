@@ -1,8 +1,10 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Path, Query
+from sqlalchemy.orm import Session
 
 from app import store
+from app.database import get_db
 from app.dependencies import Pagination, log_request_time
 from app.schemas import PostCreate, PostResponse
 
@@ -17,28 +19,32 @@ router = APIRouter(
 def list_posts(
     published: Optional[bool] = Query(default=None, description="공개 여부로 필터링"),
     pagination: Pagination = Depends(),
+    db: Session = Depends(get_db),
 ):
-    result = store.list_posts()
+    result = store.list_posts(db)
     if published is not None:
         result = [p for p in result if p.published == published]
     return result[pagination.skip : pagination.skip + pagination.limit]
 
 
 @router.get("/{post_id}", response_model=PostResponse)
-def get_post(post_id: int = Path(..., gt=0, description="조회할 게시글 id")):
-    return store.get_post_or_404(post_id)
+def get_post(
+    post_id: int = Path(..., gt=0, description="조회할 게시글 id"),
+    db: Session = Depends(get_db),
+):
+    return store.get_post_or_404(db, post_id)
 
 
 @router.post("", response_model=PostResponse, status_code=201)
-def create_post(post: PostCreate):
-    return store.create_post(post)
+def create_post(post: PostCreate, db: Session = Depends(get_db)):
+    return store.create_post(db, post)
 
 
 @router.put("/{post_id}", response_model=PostResponse)
-def update_post(post_id: int, post: PostCreate):
-    return store.update_post(post_id, post)
+def update_post(post_id: int, post: PostCreate, db: Session = Depends(get_db)):
+    return store.update_post(db, post_id, post)
 
 
 @router.delete("/{post_id}", status_code=204)
-def delete_post(post_id: int):
-    store.delete_post(post_id)
+def delete_post(post_id: int, db: Session = Depends(get_db)):
+    store.delete_post(db, post_id)

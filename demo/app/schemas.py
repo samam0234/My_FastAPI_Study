@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class PostCreate(BaseModel):
@@ -8,4 +8,6 @@ class PostCreate(BaseModel):
 
 
 class PostResponse(PostCreate):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
