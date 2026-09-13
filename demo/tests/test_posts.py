@@ -7,7 +7,7 @@ def _register_and_login(client, username="alice", password="secret123"):
 def test_list_posts_empty(client):
     response = client.get("/posts")
     assert response.status_code == 200
-    assert response.json() == []
+    assert response.json() == {"items": [], "total": 0, "skip": 0, "limit": 10}
 
 
 def test_get_post_404(client):

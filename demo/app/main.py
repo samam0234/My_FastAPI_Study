@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models
+from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.exceptions import (
     http_exception_handler,
@@ -14,6 +15,8 @@ from app.exceptions import (
 )
 from app.routers import async_demo, auth, posts
 
+settings = get_settings()
+
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="FastAPI Demo")
@@ -21,7 +24,7 @@ app = FastAPI(title="FastAPI Demo")
 # 프론트엔드(React/Vue 등 다른 origin)에서 이 API를 호출할 수 있도록 허용한다.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

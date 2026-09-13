@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app import models, store
 from app.database import get_db
 from app.dependencies import Pagination, get_current_user, log_request_time
-from app.schemas import PostCreate, PostResponse
+from app.schemas import PaginatedPosts, PostCreate, PostResponse
 
 router = APIRouter(
     prefix="/posts",
@@ -16,7 +16,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[PostResponse])
+@router.get("", response_model=PaginatedPosts)
 def list_posts(
     published: Optional[bool] = Query(default=None, description="공개 여부로 필터링"),
     pagination: Pagination = Depends(),
@@ -25,7 +25,8 @@ def list_posts(
     result = store.list_posts(db)
     if published is not None:
         result = [p for p in result if p.published == published]
-    return result[pagination.skip : pagination.skip + pagination.limit]
+    page = result[pagination.skip : pagination.skip + pagination.limit]
+    return PaginatedPosts(items=page, total=len(result), skip=pagination.skip, limit=pagination.limit)
 
 
 @router.get("/{post_id}", response_model=PostResponse)

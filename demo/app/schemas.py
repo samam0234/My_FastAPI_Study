@@ -16,6 +16,13 @@ class PostResponse(PostCreate):
     author_id: Optional[int] = None
 
 
+class PaginatedPosts(BaseModel):
+    items: list[PostResponse]
+    total: int
+    skip: int
+    limit: int
+
+
 class UserCreate(BaseModel):
     username: str
     password: str
