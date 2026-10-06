@@ -1,8 +1,14 @@
+# ─────────────────────────────────────────────────────────────
+# main.py : 애플리케이션의 진입점(앱 조립 파일)
+#   FastAPI 앱 생성 → 테이블 생성 → CORS/예외 핸들러 등록 → 라우터 연결 → 초기 데이터 주입
+#   실행: uvicorn app.main:app --reload   (app 패키지의 main.py 안의 app 변수를 실행한다는 뜻)
+# ─────────────────────────────────────────────────────────────
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
+# CORSMiddleware: 다른 출처(origin)의 프론트엔드가 API를 호출할 수 있도록 CORS 헤더를 붙여주는 미들웨어
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
@@ -18,47 +24,57 @@ from app.routers import async_demo, auth, post
 settings = get_settings()
 
 # Post/User 모델은 각 라우터 모듈을 import하는 시점에 이미 Base.metadata에 등록된다.
+# create_all: Base를 상속한 모든 모델에 해당하는 테이블을 DB에 만든다 (이미 있으면 건너뜀).
 Base.metadata.create_all(bind=engine)
 
+# FastAPI 앱 객체 생성. title은 /docs(Swagger UI) 상단에 표시된다.
 app = FastAPI(title="FastAPI Demo")
 
 # 프론트엔드(React/Vue 등 다른 origin)에서 이 API를 호출할 수 있도록 허용한다.
+# 미들웨어: 모든 요청/응답이 라우트 앞뒤에서 반드시 거쳐가는 공통 처리 계층.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_origins,  # 허용할 프론트엔드 주소 목록
+    allow_credentials=True,  # 쿠키/인증 헤더를 포함한 요청도 허용
+    allow_methods=["*"],  # 모든 HTTP 메서드(GET/POST/PUT/DELETE...) 허용
+    allow_headers=["*"],  # 모든 요청 헤더 허용
 )
 
 # 에러 응답 포맷을 한 곳에서 통일한다 (404/401/403 vs 422 vs 예상치 못한 500 모두 공통 처리).
+# add_exception_handler(예외 클래스, 처리 함수): 해당 예외가 발생하면 그 함수가 응답을 만든다.
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
 
+# include_router: 다른 파일에 정의한 라우터를 앱에 연결한다 (연결해야 실제로 URL이 활성화됨).
 app.include_router(post.router)
 app.include_router(auth.router)
 app.include_router(async_demo.router)
 
 
+# 서버가 시작될 때 샘플 글 2개를 넣어주는 시드(seed) 함수. 앞의 "_"는 내부용 함수 표시.
 def _seed_initial_posts() -> None:
+    # 라우트 밖에서는 Depends(get_db)를 쓸 수 없으므로 세션을 직접 만들고 직접 닫는다.
     db: Session = SessionLocal()
     try:
+        # 글이 하나도 없을 때만 넣는다 → 서버를 재시작해도 중복 삽입되지 않는다.
         if db.query(Post).count() == 0:
-            db.add_all(
+            db.add_all(  # add_all: 여러 객체를 한 번에 저장 예정으로 등록
                 [
                     Post(title="첫 번째 글", content="FastAPI 공부를 시작합니다.", published=True),
                     Post(title="비공개 초안", content="아직 다듬는 중입니다.", published=False),
                 ]
             )
-            db.commit()
+            db.commit()  # 확정
     finally:
-        db.close()
+        db.close()  # 예외가 나도 반드시 세션을 닫는다
 
 
-_seed_initial_posts()
+_seed_initial_posts()  # 모듈이 import되는(=서버 시작) 시점에 한 번 실행
 
 
+# @app.get("/"): 루트 주소로 GET 요청이 오면 아래 함수를 실행한다.
+# dict를 반환하면 FastAPI가 자동으로 JSON 응답으로 바꿔준다.
 @app.get("/")
 def read_root():
     return {"message": "Hello, FastAPI!"}
@@ -72,4 +88,5 @@ def hello():
 @app.get("/debug/boom")
 def boom():
     """unhandled_exception_handler가 500을 어떻게 감싸는지 확인하기 위한 실습용 라우트."""
+    # 처리하지 않은 예외 → 위에서 등록한 unhandled_exception_handler가 500 응답으로 감싼다.
     raise ValueError("일부러 발생시킨 예외입니다.")
