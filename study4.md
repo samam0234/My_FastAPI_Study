@@ -1,147 +1,133 @@
-# study4. 실습4 — SQLAlchemy로 DB 연동 (`/posts`를 실제 DB 기반으로 전환)
+# study4. 라우팅과 요청 처리
 
-Notion 학습 목표 대응: **SQLAlchemy / SQLModel + MySQL**
+## ① 목표
 
-지금까지 `store.py`는 파이썬 리스트를 저장소로 썼습니다. 이번 문서에서 SQLAlchemy를 도입해 실제 데이터베이스에 저장하도록 바꿉니다.
+URL, 경로 파라미터, 쿼리, 요청 본문이 한 함수로 모이는 흐름을 만들고, 실패는 같은 오류 JSON으로 돌려준다.
 
-## 1. SQLAlchemy 설치
+## ② 📖 이론
 
-```bash
-pip install sqlalchemy
-```
+### 왜 쓰는지
 
-- SQLAlchemy는 Python에서 가장 널리 쓰이는 ORM(Object-Relational Mapping) 라이브러리입니다. Django의 내장 ORM에 대응하지만, Django와 달리 어떤 프레임워크와도 독립적으로 사용할 수 있습니다.
-- FastAPI 자체는 어떤 DB/ORM을 쓸지 강제하지 않습니다. SQLAlchemy 외에 SQLModel(SQLAlchemy + Pydantic을 합친 라이브러리)도 많이 쓰이지만, 이 커리큘럼에서는 원리를 더 잘 보여주는 SQLAlchemy를 기준으로 진행합니다.
+클라이언트가 외울 주소가 제각각이면 화면을 붙일 때마다 경로를 다시 짠다. 공통으로 쓰는 게시판 API는 `/api` 아래에 자원을 두고, 건강 체크만 밖에 둔다. 오류도 `detail` 문자열 하나가 아니라 코드와 필드 이유를 주면 화면이 칸마다 메시지를 찍을 수 있다.
 
-## 2. SQLite로 실습하고, MySQL로 바꾸는 법
+### 핵심 개념
 
-실습 환경에 별도 DB 서버를 띄우기 번거로우므로, 개발 중에는 **SQLite**(파일 하나가 곧 DB인 경량 DB)를 사용합니다. `app/database.py`:
+- `APIRouter(prefix="/api")`: 이 라우터에 올린 모든 경로 앞에 `/api`가 붙는다.
+- `Path`: URL의 `{post_id}`처럼 경로 한 조각을 검증한다.
+- `Query`: `?page=1&q=안녕`을 검증한다.
+- 본문 매개변수 타입이 Pydantic이면 JSON 바디다.
+- 없는 경로는 404, 숫자여야 하는 id에 문자가 오면 400 `BAD_REQUEST`, 값 검증 실패는 400 `VALIDATION_ERROR`다. FastAPI의 기본 검증 코드는 422이지만, 이 앱은 공통 스펙에 맞추려고 400으로 바꾼다.
 
-```python
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+### 비유
 
-# 개발/실습용 SQLite 연결 문자열.
-# 운영 환경에서 MySQL을 쓰려면 아래처럼 드라이버와 접속 정보만 바꾸면 됩니다.
-#   pip install pymysql
-#   SQLALCHEMY_DATABASE_URL = "mysql+pymysql://user:password@localhost:3306/demo"
-SQLALCHEMY_DATABASE_URL = "sqlite:///./demo.db"
+`/api`는 건물 이름이고 `/posts/3`은 방 번호다. 방 번호 칸에 글자를 쓰면 안내 데스크가 "번호가 아니다"라고 돌려보내고, 방 안에 없는 번호를 누르면 "그 방은 없다"고 한다. 안내문은 항상 같은 양식이다.
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},  # SQLite 전용 옵션
-)
+## ③ 🛠️ 실기
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-```
-
-- **핵심은 연결 문자열(`SQLALCHEMY_DATABASE_URL`)만 바꾸면 나머지 코드(모델, 쿼리)는 그대로 재사용된다는 점**입니다. SQLite(`sqlite:///`)든 MySQL(`mysql+pymysql://`)이든 SQLAlchemy가 같은 `Engine`/`Session` 인터페이스로 감싸주기 때문입니다.
-- `connect_args={"check_same_thread": False}`는 SQLite에서만 필요한 옵션입니다. SQLite는 기본적으로 커넥션을 연 스레드에서만 쓸 수 있게 제한하는데, uvicorn은 요청마다 다른 스레드를 쓸 수 있어 이 제한을 풀어줘야 합니다. MySQL에서는 이 옵션이 필요 없습니다.
-- `get_db()`는 study3에서 배운 "제너레이터 의존성" 패턴입니다. 요청이 들어오면 세션을 열고(`yield db`), 라우트 처리가 끝나면(응답 생성 후) `finally`에서 세션을 닫습니다 — DB 커넥션이 요청마다 새로 열리고 안전하게 닫히는 것을 보장합니다.
-
-## 3. 모델 정의
-
-`app/models.py`:
+조립은 `project/app/main.py`의 이 부분이다.
 
 ```python
-from sqlalchemy import Boolean, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
-
-from app.database import Base
-
-
-class Post(Base):
-    __tablename__ = "posts"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    content: Mapped[str] = mapped_column(String, nullable=False)
-    published: Mapped[bool] = mapped_column(Boolean, default=True)
+api = APIRouter(prefix="/api")
+api.include_router(post.router)
+api.include_router(auth.router)
+api.include_router(comment.router)
+app.include_router(api)
 ```
 
-- `Mapped[...]` + `mapped_column(...)`은 SQLAlchemy 2.0 스타일의 모델 선언 방식입니다. Django의 `models.py`에서 `CharField`, `BooleanField`를 쓰던 것과 같은 역할입니다.
-- Django의 `makemigrations` + `migrate`에 해당하는 작업은, 이 실습 수준에서는 `Base.metadata.create_all(bind=engine)` 한 줄로 대신합니다 (`app/main.py`에서 앱 시작 시 실행). 실무에서는 스키마 변경 이력을 관리하기 위해 [Alembic](https://alembic.sqlalchemy.org/)이라는 마이그레이션 도구를 함께 씁니다.
+줄별 설명:
 
-## 4. Pydantic 스키마를 ORM과 연결하기
+1. prefix가 `/api`인 빈 라우터를 만든다. 체크리스트의 `APIRouter(prefix="/api")`가 이 줄이다.
+2. 게시글 라우터의 `/posts`가 붙어 최종 경로는 `/api/posts`가 된다.
+3. 회원 경로는 `/api/auth/...`가 된다.
+4. 댓글 경로도 같은 접두어를 받는다.
+5. 이 묶음을 앱에 등록해야 실제로 열린다.
 
-`app/schemas.py`의 `PostResponse`에 `model_config = ConfigDict(from_attributes=True)`를 추가했습니다.
+게시글 라우터 `project/app/routers/post.py`의 조회와 생성은 다음과 같다.
 
 ```python
-class PostResponse(PostCreate):
-    model_config = ConfigDict(from_attributes=True)
+router = APIRouter(prefix="/posts", tags=["posts"], dependencies=[Depends(log_request_time)])
 
-    id: int
+@router.get("", response_model=PostList)
+def list_posts(page: PageParams = Depends(), db: Session = Depends(get_db)):
+    return service.list_posts(db, q=page.q, sort=page.sort, page=page.page, limit=page.limit)
+
+@router.get("/{post_id}", response_model=PostEnvelope)
+def get_post(post_id: int = Path(..., gt=0), db: Session = Depends(get_db)):
+    return PostEnvelope(data=service.present_one(db, service.get_post_or_404(db, post_id)))
+
+@router.post("", response_model=PostEnvelope, status_code=201)
+def create_post(post: PostCreate, response: Response, ...):
+    created = service.create_post(...)
+    response.headers["Location"] = f"/api/posts/{created.id}"
+    return PostEnvelope(data=created)
 ```
 
-- 기본적으로 Pydantic은 dict나 Pydantic 모델에서만 값을 읽습니다. `from_attributes=True`를 켜면 SQLAlchemy 객체(`post.title`처럼 속성 접근)에서도 값을 읽어 변환할 수 있습니다.
-- 덕분에 라우트가 `models.Post` 객체를 그대로 반환해도, `response_model=PostResponse` 덕분에 FastAPI가 자동으로 올바른 JSON으로 직렬화합니다.
+- `""`는 prefix 그 자체, 즉 `/api/posts`다.
+- `/{post_id}`는 동적 경로. `gt=0`이라 0과 음수는 거절된다.
+- `post: PostCreate`는 JSON 본문이다. 쿼리와 경로는 `Path`/`Query`, 본문은 스키마다.
+- 생성 성공은 201이고 `Location` 헤더에 새 글의 경로를 적는다.
+- 수정은 `PATCH /api/posts/{id}`다. 보낸 필드만 바뀐다.
+- 삭제는 `DELETE`와 204, 본문은 비어 있다.
 
-## 5. `store.py`를 DB 기반으로 교체
+없는 글은 서비스가 `AppError(404, "NOT_FOUND", ...)`를 던진다. 핸들러 `exceptions.py`가 이를 다음 모양으로 바꾼다.
 
-라우터 코드(`routers/posts.py`)의 구조는 study3과 거의 동일하고, `store.py` 함수들만 SQL 쿼리로 바뀌었습니다.
-
-```python
-def get_post_or_404(db: Session, post_id: int) -> models.Post:
-    post = db.get(models.Post, post_id)
-    if post is None:
-        raise HTTPException(status_code=404, detail=f"post {post_id}를 찾을 수 없습니다.")
-    return post
-
-
-def create_post(db: Session, post: PostCreate) -> models.Post:
-    new_post = models.Post(**post.model_dump())
-    db.add(new_post)
-    db.commit()
-    db.refresh(new_post)
-    return new_post
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "해당 게시글을 찾을 수 없습니다.",
+    "requestId": "req-1"
+  }
+}
 ```
 
-- 라우터는 `db: Session = Depends(get_db)`로 세션을 주입받아 `store.xxx(db, ...)` 형태로 그대로 호출합니다. **의존성 주입 덕분에 "DB 세션을 어떻게 얻는가"가 라우트 코드에서 완전히 분리**되어 있습니다 — study3에서 만든 구조가 그대로 빛을 발하는 지점입니다.
-- `db.add()` → `db.commit()` → `db.refresh()` 흐름: 세션에 객체를 등록 → 실제 DB에 반영 → DB가 채워준 값(자동 증가 `id` 등)을 다시 읽어옴.
+검증 실패는 `fields`가 더 붙는다.
 
-## 6. 실습4: 동작 확인 (DB 영속성 검증)
-
-```bash
-uvicorn app.main:app --reload --port 8001
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "입력값을 확인하세요.",
+    "fields": { "title": ["1~200자로 입력하세요."] },
+    "requestId": "..."
+  }
+}
 ```
 
-앱 시작 시 `demo.db` 파일이 생성되고, 테이블이 비어 있으면 초기 게시글 2개를 자동으로 넣어줍니다(`_seed_initial_posts`).
+제목 길이 실패만 그 한글 문장으로 바꾸고, 나머지 검증 문장은 Pydantic 메시지를 필드별로 모은다. 경로 id가 숫자가 아니거나 JSON이 깨지면 코드는 `BAD_REQUEST`다.
 
-```bash
-$ curl http://127.0.0.1:8001/posts
-[{"title":"첫 번째 글","content":"FastAPI 공부를 시작합니다.","published":true,"id":1},
- {"title":"비공개 초안","content":"아직 다듬는 중입니다.","published":false,"id":2}]
+요청에 `X-Request-Id`를 넣으면 응답 헤더가 같은 값을 돌려주고, 오류 본문의 `requestId`도 그 값이다. 헤더가 없으면 서버가 UUID를 만든다.
 
-$ curl -X POST http://127.0.0.1:8001/posts \
-    -H "Content-Type: application/json" \
-    -d '{"title":"study4 practice","content":"SQLAlchemy DB integration","published":true}'
-{"title":"study4 practice","content":"SQLAlchemy DB integration","published":true,"id":3}
-```
+프론트 주소와 백엔드 주소를 맞출 때 화면은 `http://localhost:3000`, API는 `demo` 8001 / `project` 8000이다. 화면의 `VITE_API_BASE_URL`이 그 포트를 가리켜야 `/api/posts`가 같은 자원을 본다.
 
-**서버를 완전히 종료했다가 다시 실행**해서 인메모리가 아니라 진짜 DB에 저장되는지 확인했습니다.
+## ④ 🔗 연동 포인트
 
-```bash
-$ ls -la demo.db
--rw-r--r-- 1 User 197121 12288  9월 14 02:39 demo.db
+쿼리 `page`, `limit`, `q`, `sort`는 study3의 목록 메타와 study6의 SQL `offset/limit`로 이어진다. `Location`은 생성 직후 상세 조회로 이동할 때 쓴다. 프론트 `api.js`는 경로를 `/api/...`로만 부른다. 오류의 `error.message`와 `fields`는 study5 입력칸 아래에 그대로 표시한다.
 
-$ curl http://127.0.0.1:8001/posts   # 서버 재시작 후
-[{"title":"첫 번째 글", ..., "id":1},
- {"title":"비공개 초안", ..., "id":2},
- {"title":"study4 practice","content":"SQLAlchemy DB integration","published":true,"id":3}]
-```
+## ⑤ 오류 노트
 
-방금 만들었던 `id=3` 게시글이 재시작 후에도 그대로 남아있는 것을 확인했습니다 — study2의 인메모리 리스트였다면 서버를 재시작하는 순간 사라졌을 데이터입니다.
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| `/posts`는 되고 `/api/posts`는 404 | 접두어 라우터를 앱에 안 붙임 | `APIRouter(prefix="/api")` 등록을 확인 |
+| 검증이 422로 나감 | 기본 핸들러를 덮지 않음 | `RequestValidationError` 핸들러가 400을 반환하는지 확인 |
+| `{"detail": ...}`만 보임 | `HTTPException` 기본 응답 | `http_exception_handler`가 `error` 객체를 만드는지 확인 |
+| id에 `nope`을 넣었더니 422 | 경로 오류를 값 검증과 같은 코드로 봄 | 핸들러가 path 위치를 `BAD_REQUEST`로 나누는지 확인 |
 
-다음 문서(study5)에서는 이 커리큘럼의 또 다른 축인 **회원(User) 도메인**을 SQLAlchemy 모델로 추가하고, 비밀번호 해시와 회원가입을 구현합니다 (JWT 로그인 자체는 study7에서 진행).
+## ⑥ 직접 해보기
+
+1. `GET /api/posts?q=안녕&page=1&limit=10`의 쿼리가 메타에 반영되는지 본다.
+2. `GET /api/posts/nope`과 `GET /api/posts/999`의 `error.code`가 다른지 비교한다.
+3. 제목을 빈 문자열로 POST해 `fields.title`에 `1~200자로 입력하세요.`가 있는지 본다.
+
+## ⑦ ☐ 체크리스트
+
+- [ ] `/health`에는 `/api`가 없고 게시글·회원에는 있다.
+- [ ] 동적 경로 `/{post_id}`와 쿼리 `page`, `q`를 구분할 수 있다.
+- [ ] 생성은 201과 `Location`, 삭제는 204다.
+- [ ] 경로, Path/Query, Pydantic 스키마
+- [ ] 경로에 `/api` 접두어 (`APIRouter(prefix="/api")`)
+- [ ] FastAPI 기본 `detail` 오류를 예외 핸들러로 `error.code/message/fields`로 통일
+
+## ⑧ 다음 단계
+
+경로가 요청을 받으면, study5에서 그 입력값을 거절·표시하고 같은 내용이 두 번 저장되지 않게 한다.

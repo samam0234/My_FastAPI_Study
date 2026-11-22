@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:///./demo.db
+      SECRET_KEY: change-me
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    volumes:
+      - board-data:/app
+
+  postgres:
+    image: postgres:16
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    ports:
+      - "5432:5432"
+
+volumes:
+  board-data:

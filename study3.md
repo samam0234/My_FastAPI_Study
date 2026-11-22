@@ -1,130 +1,115 @@
-# study3. 실습3 — 의존성 주입(Depends)과 프로젝트 구조화
+# study3. 데이터 다루기
 
-Notion 학습 목표 대응: **의존성 주입**
+## ① 목표
 
-지금까지는 `demo/main.py` 파일 하나에 모든 코드가 있었습니다. 이번 문서에서는 FastAPI의 핵심 기능인 `Depends()`를 배우고, 그 김에 프로젝트를 여러 모듈로 구조화합니다.
+요청과 응답의 모양을 Pydantic으로 고정하고, 파이썬 필드와 JSON 필드 이름을 역할에 맞게 나눈다.
 
-## 1. 의존성 주입(Dependency Injection)이란?
+## ② 📖 이론
 
-여러 라우트에서 공통으로 필요한 로직(페이지네이션 파라미터 파싱, 인증 확인, DB 세션 획득 등)을 함수(또는 클래스)로 뽑아내고, FastAPI가 라우트를 호출하기 **전에 그 함수를 실행해서 결과를 인자로 주입**해주는 방식입니다.
+### 왜 쓰는지
 
-```python
-def common_dependency():
-    return "무언가"
+딕셔너리는 오타를 실행해 봐야 안다. 스키마는 요청이 함수에 들어가기 전에 빠지거나 틀린 값을 거절하고, `/docs`에 그 모양을 보여 준다. DB 모델과 응답 모델을 나누면 비밀번호 해시 같은 컬럼이 JSON에 실려 나가지 않는다.
 
-@app.get("/example")
-def example(value: str = Depends(common_dependency)):
-    return {"value": value}
-```
+### 핵심 개념
 
-- `Depends(common_dependency)`가 붙은 인자는 FastAPI가 `common_dependency()`를 먼저 호출한 뒤 그 반환값을 `value`에 넣어줍니다.
-- 의존성 함수도 일반 라우트 함수처럼 `Query`, `Path`, 다른 `Depends`를 인자로 받을 수 있어 **중첩(의존성이 의존성을 가짐)**이 가능합니다.
-- Django에는 이런 범용 메커니즘이 없고, 미들웨어나 믹스인, 데코레이터로 각자 다르게 구현해야 하는 것과 대비됩니다.
+- **BaseModel**: 필드 타입을 선언하는 클래스.
+- **요청 스키마 / 응답 스키마**: 들어오는 값과 나가는 값을 다른 클래스로 둔다.
+- **alias_generator**: 파이썬은 `created_at`, JSON은 `createdAt`처럼 이름을 바꿔 준다.
+- **from_attributes**: ORM 객체의 속성에서도 값을 읽게 한다.
+- **로컬 저장**: 이 단계의 영속 저장은 아직 규칙이 아니라 파일이다. SQLite 파일 `demo.db`가 그 역할을 하고, 컬럼 설계는 study6에서 한다.
 
-## 2. 함수형 의존성: 페이지네이션
+### 비유
 
-`app/dependencies.py`:
+스키마는 주문서 양식이다. 칸에 없는 항목은 주방에 전달되지 않고, 손님에게 돌려주는 영수증에는 원가(해시)를 인쇄하지 않는다. camelCase 별칭은 같은 내용을 다른 언어 습관으로 적는 번역 도장이다.
 
-```python
-class Pagination:
-    """여러 라우트에서 재사용하는 페이지네이션 쿼리 파라미터 의존성."""
+## ③ 🛠️ 실기
 
-    def __init__(
-        self,
-        skip: int = Query(default=0, ge=0),
-        limit: int = Query(default=10, ge=1, le=100),
-    ):
-        self.skip = skip
-        self.limit = limit
-```
-
-- 클래스도 의존성으로 쓸 수 있습니다. `__init__`의 인자들이 그대로 `Query`/`Path`/`Depends` 선언이 됩니다.
-- 라우트에서는 `pagination: Pagination = Depends()`처럼 쓰면 `Pagination(skip=.., limit=..)` 인스턴스가 주입됩니다. `Depends()`처럼 인자를 생략하면 타입힌트(`Pagination`)를 보고 알아서 그 클래스를 호출합니다.
-- study2에서 `list_posts` 함수 인자에 직접 있던 `skip`, `limit`이 이제 `Pagination` 하나로 묶여 재사용 가능해졌습니다.
-
-## 3. 제너레이터 의존성: 요청 처리 시간 로그
+`project/app/schemas/common.py` 전체가 별칭 규칙이다.
 
 ```python
-def log_request_time():
-    """라우터 단위 의존성 예시: 요청 처리 시간을 로그로 남긴다."""
-    start = time.perf_counter()
-    yield
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    print(f"[dependency] request handled in {elapsed_ms:.2f}ms")
+from pydantic import BaseModel, ConfigDict
+
+
+def to_camel(name: str) -> str:
+    head, *tail = name.split("_")
+    return head + "".join(part.capitalize() for part in tail if part)
+
+
+class APIModel(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        from_attributes=True,
+    )
 ```
 
-- `return` 대신 `yield`를 쓰면 **"준비 → 라우트 실행 → 정리"** 구조의 의존성을 만들 수 있습니다. `yield` 이전은 요청 처리 전, 이후는 응답을 만든 후에 실행됩니다.
-- DB 세션을 열고(`yield session`) 요청이 끝나면 닫는 패턴(study4)이 바로 이 구조를 사용합니다.
-- 이 의존성은 개별 라우트가 아니라 **라우터 전체**에 걸어서, "posts 관련 요청은 전부 로그를 남긴다"는 공통 정책을 표현합니다.
+줄별 설명:
 
-## 4. 라우터 분리: `APIRouter`
+1. Pydantic의 모델 부모와 설정 타입.
+2. 빈 줄.
+3. `created_at` 같은 이름을 받아 camelCase로 바꾸는 함수.
+4. 첫 조각은 그대로 두고, 나머지는 앞글자만 대문자로 붙인다.
+5. `created` + `At`. 빈 조각은 무시한다.
+6. 빈 줄.
+7. 이후 스키마는 이 클래스를 상속한다.
+8. 설정을 한곳에 모은다.
+9. 필드 이름마다 `to_camel`을 호출해 JSON 이름을 만든다.
+10. 파이썬 이름(`created_at`)으로도 값을 넣을 수 있다. 테스트와 내부 코드가 편하다.
+11. ORM 객체의 속성을 읽어 스키마를 만들 수 있다.
+12. 설정 끝.
+13. 클래스 끝.
 
-`app/routers/posts.py`:
+게시글 응답은 이 규칙을 상속한다. 비밀번호에 해당하는 필드는 아예 없다.
 
 ```python
-router = APIRouter(
-    prefix="/posts",
-    tags=["posts"],
-    dependencies=[Depends(log_request_time)],
-)
-
-@router.get("", response_model=list[PostResponse])
-def list_posts(
-    published: Optional[bool] = Query(default=None, description="공개 여부로 필터링"),
-    pagination: Pagination = Depends(),
-):
-    ...
+class PostResponse(APIModel):
+    id: int
+    title: str
+    body: str
+    tags: list[str]
+    author: Author | None = None
+    comment_count: int = 0
+    created_at: datetime
+    updated_at: datetime
 ```
 
-- `APIRouter`는 Django의 앱별 `urls.py`에 대응합니다. `prefix="/posts"`를 지정해두면 각 라우트 데코레이터에는 `/posts`를 반복해서 쓰지 않아도 됩니다.
-- `dependencies=[Depends(log_request_time)]`처럼 **라우터 생성 시점에 의존성을 걸면**, 이 라우터에 속한 모든 라우트에 자동 적용됩니다(반환값을 쓰지 않는 "부수효과 전용" 의존성에 적합).
-- `tags=["posts"]`는 `/docs`에서 라우트를 그룹으로 묶어 보여주는 용도입니다.
+JSON으로 나가면 키는 `commentCount`, `createdAt`, `updatedAt`이 된다. FastAPI의 `response_model`은 기본적으로 별칭으로 직렬화한다.
 
-## 5. 프로젝트 구조 재편
+회원 응답 `UserResponse`에는 `id`, `email`, `nickname`만 있다. `hashed_password`를 스키마에 넣지 않는 것이 필터다.
 
-```
-demo/
-├── requirements.txt
-└── app/
-    ├── __init__.py
-    ├── main.py          # FastAPI 앱 생성 + 라우터 등록
-    ├── dependencies.py  # 공용 의존성 (Pagination, log_request_time)
-    ├── schemas.py        # Pydantic 스키마 (PostCreate, PostResponse)
-    ├── store.py          # 인메모리 저장소 (DB 연동 전 임시 구현, study4에서 교체)
-    └── routers/
-        ├── __init__.py
-        └── posts.py       # /posts 라우터
-```
+요청 쪽 `PostCreate`는 `title`, `body`, `tags`다. 한 단어라 별칭이 달라도 철자가 같다. 별칭의 효과는 응답의 시각과 개수 필드에서 드러난다.
 
-- `main.py`가 이제 "앱 조립"만 담당하고, 실제 라우트 로직은 `routers/posts.py`, 데이터 접근은 `store.py`로 분리되었습니다.
-- 실행 명령어가 `uvicorn main:app`에서 `uvicorn app.main:app`으로 바뀌었습니다(`<패키지>.<모듈>:<변수명>`).
-- `store.py`는 지금은 파이썬 리스트를 다루지만, study4에서 이 파일의 함수들을 SQLAlchemy 쿼리로 바꾸기만 하면 라우터 코드는 거의 그대로 유지됩니다 — 계층을 분리해두는 이유입니다.
+화면과 묶는 바인딩은 백엔드에 양방향 바인딩이 없다. 프론트는 응답 JSON의 `data`를 state에 넣고, 입력칸의 state를 다시 JSON 바디로 POST한다. `demo/frontend/src/App.jsx`의 `createPost({ title, body, tags })`가 그 연결이다.
 
-## 6. 실습3: 동작 확인
+로컬 파일 저장은 `.env`의 `DATABASE_URL=sqlite:///./demo.db`다. 서버를 끄면 테이블 내용은 파일에 남는다. 스키마를 바꾼 뒤에는 옛 파일을 지워야 새 컬럼이 만들어진다. `create_all`은 없는 테이블만 만들고, 있는 테이블의 컬럼을 고치지 않는다.
 
-```bash
-uvicorn app.main:app --reload --port 8001
-```
+## ④ 🔗 연동 포인트
 
-```bash
-$ curl http://127.0.0.1:8001/
-{"message":"Hello, FastAPI!"}
+이 스키마가 study5의 검증 메시지, study6의 저장 컬럼, study12 화면의 `post.body` / `post.createdAt`과 맞물린다. 프론트는 snake_case 키를 읽지 않는다. 백엔드를 다른 구현으로 바꿔도 이 camelCase 봉투를 지키면 화면 코드를 그대로 둔다.
 
-$ curl http://127.0.0.1:8001/posts
-[{"title":"첫 번째 글","content":"FastAPI 공부를 시작합니다.","published":true,"id":1},
- {"title":"비공개 초안","content":"아직 다듬는 중입니다.","published":false,"id":2}]
+## ⑤ 오류 노트
 
-$ curl "http://127.0.0.1:8001/posts?limit=1"
-[{"title":"첫 번째 글","content":"FastAPI 공부를 시작합니다.","published":true,"id":1}]
-```
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| 응답에 `created_at`만 보임 | 모델을 `APIModel`이 아닌 `BaseModel`로 둠 | `APIModel`을 상속 |
+| 요청에 `createdAt`을 넣었더니 무시 | 생성 스키마에 그 필드가 없음 | 서버가 시각을 채운다. 클라이언트가 보내지 않는다 |
+| ORM을 반환했는데 500 | `from_attributes` 없이 응답 모델을 강제 | `APIModel` 설정을 확인 |
+| 옛 SQLite에서 컬럼이 없다고 함 | 이전 스키마의 파일이 남음 | `demo.db`를 지우고 서버를 다시 시작 |
 
-서버 로그에서 `/posts` 요청에만 의존성이 남긴 로그가 찍히는 것도 확인했습니다(`/`는 posts 라우터 소속이 아니므로 찍히지 않음).
+## ⑥ 직접 해보기
 
-```
-INFO:     127.0.0.1:59025 - "GET /posts HTTP/1.1" 200 OK
-[dependency] request handled in 0.89ms
-INFO:     127.0.0.1:59026 - "GET /posts?limit=1 HTTP/1.1" 200 OK
-[dependency] request handled in 1.20ms
-```
+1. 글을 하나 만들고 응답에 `createdAt`이 있고 `created_at`이 없는지 본다.
+2. 회원가입 응답 본문에 `password` 문자열이 없는지 확인한다.
+3. `demo.db`를 지운 뒤 서버를 다시 켜서 빈 목록이 나오는지 본다.
 
-다음 문서(study4)부터는 `store.py`의 인메모리 리스트를 SQLAlchemy + 실제 DB로 교체합니다.
+## ⑦ ☐ 체크리스트
+
+- [ ] 요청 스키마와 응답 스키마를 다른 클래스로 두었다.
+- [ ] 응답에 비밀번호 해시가 없다.
+- [ ] `created_at`이 JSON에서 `createdAt`으로 나간다.
+- [ ] SQLite 파일이 재시작 후에도 데이터를 남기는 것을 확인했다.
+- [ ] 응답 모델에서 필드 이름을 camelCase로 (`alias_generator`)
+
+## ⑧ 다음 단계
+
+모양을 정했으니 study4에서 그 모양이 어느 URL로 들어오고, 실패하면 어떤 JSON으로 나가는지 경로와 오류 형식을 고정한다.

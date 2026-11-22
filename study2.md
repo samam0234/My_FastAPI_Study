@@ -1,121 +1,139 @@
-# study2. 실습2 — Path/Query 파라미터와 Pydantic 스키마로 `/posts` CRUD 구현
+# study2. 핵심 구조
 
-Notion 학습 목표 대응: **경로, Path/Query, Pydantic 스키마**
+## ① 목표
 
-이 커리큘럼의 공통 스펙인 `/posts` CRUD를 이번 문서에서 처음 만듭니다. 아직 DB는 연결하지 않고, 파이썬 리스트를 임시 저장소로 사용합니다(DB 연동은 study4).
+FastAPI 앱을 라우터, 서비스, 저장소로 나누고, `Depends`로 그 단위가 값을 주고받게 만든다.
 
-## 1. 경로(Path) 파라미터
+## ② 📖 이론
 
-URL 경로 자체에 포함된 값입니다. 함수 인자로 받으면 타입힌트에 따라 자동 변환·검증됩니다.
+### 왜 쓰는지
+
+경로 함수 안에 SQL과 권한 검사와 JSON 모양을 모두 넣으면 한 파일이 금방 커진다. 역할을 나누면 테스트할 때 HTTP를 흉내 내지 않고 규칙만 부를 수 있다.
+
+### 핵심 개념
+
+- **앱**: `FastAPI()` 인스턴스. 미들웨어와 라우터를 모은다.
+- **라우터**: `APIRouter`. 관련 URL만 모은 작은 앱. `include_router`로 본체에 붙인다.
+- **서비스**: 404인지, 내 글인지 같은 규칙.
+- **저장소**: `db.query`만 있는 파일. HTTP를 모른다.
+- **의존성 주입**: 함수 매개변수 기본값에 `Depends(...)`를 적으면 FastAPI가 그 함수를 먼저 실행해 결과를 넣어 준다.
+
+호출 방향은 한쪽으로만 간다.
+
+```text
+router → service → repository → model
+```
+
+서비스가 라우터를 import하면 순환이 생긴다. 아래층은 위층을 몰라야 한다.
+
+### 비유
+
+식당에서 홀(라우터)은 주문을 받아 주방(서비스)에 넘긴다. 주방은 창고(저장소)에서 재료를 꺼낸다. 홀 직원이 창고 선반을 직접 열지 않는다. `Depends`는 테이블마다 물컵을 미리 올려 두는 직원이다.
+
+## ③ 🛠️ 실기
+
+여러 목록 경로가 같은 쿼리를 받게 하려고 클래스 의존성을 둔다. `demo/app/dependencies.py` 전체는 다음과 같다.
 
 ```python
-@app.get("/posts/{post_id}")
-def get_post(post_id: int = Path(..., gt=0, description="조회할 게시글 id")):
-    ...
+import time
+
+from fastapi import Query
+
+
+class PageParams:
+    def __init__(
+        self,
+        page: int = Query(default=1, ge=1, description="1부터 세는 페이지 번호"),
+        limit: int = Query(default=10, ge=1, description="한 페이지 개수. 50을 넘으면 50"),
+        q: str = Query(default="", description="제목·본문 검색어"),
+        sort: str = Query(default="-createdAt", description="createdAt, -createdAt, -commentCount"),
+    ) -> None:
+        self.page = page
+        self.limit = min(limit, 50)
+        self.q = q
+        self.sort = sort
+
+
+def log_request_time():
+    start = time.perf_counter()
+    yield
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    print(f"[dependency] request handled in {elapsed_ms:.2f}ms")
 ```
 
-- `{post_id}`가 함수 인자 `post_id: int`와 이름으로 매칭됩니다.
-- `Path(..., gt=0)`: `...`(Ellipsis)는 "필수값"이라는 의미이고, `gt=0`은 "0보다 커야 함"이라는 검증 규칙입니다.
-- `/posts/abc`처럼 int로 변환할 수 없는 값이 오면 FastAPI가 자동으로 422 에러를 응답합니다.
+줄별 설명:
 
-## 2. 쿼리(Query) 파라미터
+1. 경과 시간을 재는 표준 라이브러리.
+2. 빈 줄.
+3. `Query`는 쿼리 문자열의 기본값과 범위를 선언한다.
+4. 빈 줄 두 칸.
+6. 클래스 이름이 곧 의존성 이름이다.
+7. FastAPI는 `Depends()`에 클래스를 넘기면 `__init__` 매개변수를 요청에서 채운다.
+8. `page`는 1 이상. 0이나 음수면 요청이 함수에 들어가기 전에 거절된다.
+9. `limit` 기본 10, 1 이상.
+10. 검색어. 없으면 빈 문자열.
+11. 정렬 키의 기본값은 최신 글.
+12. 생성자 끝.
+13. 검증을 통과한 page를 속성으로 보관한다.
+14. 50을 넘기면 50으로 자른다. 오류 대신 상한을 맞추는 규칙이다.
+15. 검색어 보관.
+16. 정렬 키 보관.
+17. 클래스 끝.
+18. 빈 줄.
+19. 제너레이터 의존성. `yield`가 있으면 요청 전과 후를 한 함수에서 처리한다.
+20. 시작 시각.
+21. 여기서 경로 함수가 실행된다. yield 위는 전, 아래는 후.
+22. 밀리초로 바꾼다.
+23. 터미널에 찍는다. 응답 본문에는 넣지 않는다.
 
-경로에 포함되지 않고 `?key=value` 형태로 전달되는 값입니다. 함수 인자의 기본값 유무로 Path/Query가 구분됩니다 — 경로에 `{}`로 선언되지 않은 인자는 자동으로 Query 파라미터가 됩니다.
+라우터는 이 의존성을 이렇게 받는다.
 
 ```python
-@app.get("/posts", response_model=list[PostResponse])
-def list_posts(
-    published: Optional[bool] = Query(default=None, description="공개 여부로 필터링"),
-    skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=10, ge=1, le=100),
-):
-    ...
+router = APIRouter(
+    prefix="/posts",
+    tags=["posts"],
+    dependencies=[Depends(log_request_time)],
+)
+
+@router.get("")
+def list_posts(page: PageParams = Depends(), db: Session = Depends(get_db)):
+    return service.list_posts(db, q=page.q, sort=page.sort, page=page.page, limit=page.limit)
 ```
 
-- `published`: 생략 가능(옵션) 쿼리 파라미터. `?published=false`처럼 넘기면 문자열 `"false"`를 FastAPI가 알아서 `bool`로 변환합니다.
-- `skip`, `limit`: 페이지네이션에 자주 쓰이는 패턴. `ge`(>=), `le`(<=)로 범위를 제한해 잘못된 값이 들어오는 것을 애초에 막습니다.
+- `dependencies=[...]`는 이 라우터의 모든 경로에 `log_request_time`을 건다. 매개변수로 받지 않아도 실행된다.
+- `Depends()`의 빈 괄호는 "PageParams를 만들어 달라"는 뜻이다.
+- `get_db`도 의존성이다. 요청이 끝나면 세션을 닫는다. 정의는 `database.py`의 `yield`에 있다.
+- 경로 함수는 서비스를 호출만 한다. 규칙을 if로 쓰지 않는다.
 
-## 3. Pydantic 스키마 설계
+`demo`와 `project` 모두 이 파일을 같은 내용으로 둔다. `project`는 여기에 업로드·AI·웹소켓 라우터를 더 붙일 뿐이다.
 
-```python
-class PostCreate(BaseModel):
-    title: str
-    content: str
-    published: bool = True
+## ④ 🔗 연동 포인트
 
+`PageParams`가 모아 둔 `page`, `limit`, `q`, `sort`는 study6 목록 쿼리와 study14 페이지 규칙의 입력이다. `get_db`가 열어 준 세션은 저장소를 거쳐 서비스의 404/403 판단에 쓰이고, 그 결과가 라우터의 응답 모델로 직렬화된다. 단위 사이에 딕셔너리를 몰래 주고받지 않고, 함수 인자로만 넘긴다.
 
-class PostResponse(PostCreate):
-    id: int
-```
+## ⑤ 오류 노트
 
-- `PostCreate`: 클라이언트가 **보내는** 데이터(요청 바디)의 형태. `id`는 서버가 생성하므로 포함하지 않습니다.
-- `PostResponse`: 클라이언트에게 **돌려주는** 데이터의 형태. `PostCreate`를 상속해 `id` 필드만 추가했습니다.
-- 라우트 함수 인자에 `post: PostCreate`처럼 타입힌트를 주면, FastAPI가 요청 바디(JSON)를 자동으로 파싱·검증해서 `PostCreate` 인스턴스로 넘겨줍니다. 검증 실패 시 422 응답이 자동 생성됩니다.
-- `response_model=PostResponse`를 지정하면 라우트가 무엇을 반환하든 이 스키마 기준으로 필터링·직렬화되고, `/docs`에도 응답 형태가 정확히 문서화됩니다.
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| 라우트를 추가했는데 404 | `include_router`를 안 함 | `main.py`에서 라우터를 앱에 연결 |
+| 순환 import | 서비스가 라우터를 import | 호출은 라우터 → 서비스만 |
+| `Depends`가 동작 안 함 | 기본값이 아니라 호출 위치에 씀 | 매개변수 기본값으로 `Depends(...)` |
+| yield 의존성이 응답 후에 안 돔 | 일반 return만 있음 | 전/후가 필요하면 `yield` |
 
-## 4. `/posts` CRUD 라우트
+## ⑥ 직접 해보기
 
-`demo/main.py`에 아래 라우트를 추가했습니다.
+1. `GET /api/posts`를 호출하고 터미널에 `request handled in ...ms`가 찍히는지 본다.
+2. `?limit=1000`으로 호출해 응답의 limit가 50인지 확인한다.
+3. `services/post.py`에서 라우터를 import하지 않았다는 것을 검색으로 확인한다.
 
-| 메서드 | 경로 | 설명 |
-|---|---|---|
-| GET | `/posts` | 목록 조회 (`published`, `skip`, `limit` 쿼리 파라미터 지원) |
-| GET | `/posts/{post_id}` | 단건 조회 (없으면 404) |
-| POST | `/posts` | 생성 (201 Created) |
-| PUT | `/posts/{post_id}` | 전체 수정 (없으면 404) |
-| DELETE | `/posts/{post_id}` | 삭제 (204 No Content, 없으면 404) |
+## ⑦ ☐ 체크리스트
 
-없는 게시글을 조회/수정/삭제하면 공통으로 사용하는 `get_post_or_404()` 헬퍼가 `HTTPException(status_code=404, ...)`를 발생시킵니다. FastAPI는 `HTTPException`을 잡아서 지정한 상태 코드 + `{"detail": "..."}` 형태의 JSON 에러 응답으로 자동 변환해줍니다(커스텀 예외 핸들러는 study8에서 다룸).
+- [ ] 라우터, 서비스, 저장소가 서로 다른 파일이라는 것을 말할 수 있다.
+- [ ] 호출 방향이 router → service → repository → model이다.
+- [ ] `Depends`로 페이지 파라미터와 DB 세션을 넣었다.
+- [ ] `yield` 의존성으로 요청 시간을 로그에 남겼다.
+- [ ] 의존성 주입
 
-## 5. 실습2: 동작 확인
+## ⑧ 다음 단계
 
-```bash
-uvicorn main:app --reload --port 8001
-```
-
-### 목록/필터 조회
-
-```bash
-$ curl http://127.0.0.1:8001/posts
-[{"title":"첫 번째 글","content":"FastAPI 공부를 시작합니다.","published":true,"id":1},
- {"title":"비공개 초안","content":"아직 다듬는 중입니다.","published":false,"id":2}]
-
-$ curl "http://127.0.0.1:8001/posts?published=false"
-[{"title":"비공개 초안","content":"아직 다듬는 중입니다.","published":false,"id":2}]
-```
-
-### 단건 조회 / 404
-
-```bash
-$ curl http://127.0.0.1:8001/posts/1
-{"title":"첫 번째 글","content":"FastAPI 공부를 시작합니다.","published":true,"id":1}
-
-$ curl -o - -w "\n%{http_code}\n" http://127.0.0.1:8001/posts/999
-{"detail":"post 999를 찾을 수 없습니다."}
-404
-```
-
-### 생성 / 수정 / 삭제
-
-```bash
-$ curl -X POST http://127.0.0.1:8001/posts \
-    -H "Content-Type: application/json" \
-    -d '{"title":"study2 practice","content":"Path/Query/Pydantic practice","published":true}'
-{"title":"study2 practice","content":"Path/Query/Pydantic practice","published":true,"id":3}
-
-$ curl -X PUT http://127.0.0.1:8001/posts/3 \
-    -H "Content-Type: application/json" \
-    -d '{"title":"study2 practice (updated)","content":"content updated","published":false}'
-{"title":"study2 practice (updated)","content":"content updated","published":false,"id":3}
-
-$ curl -o /dev/null -w "%{http_code}\n" -X DELETE http://127.0.0.1:8001/posts/3
-204
-```
-
-> **참고**: Windows Git Bash 터미널에서 `curl -d`로 한글이 포함된 JSON을 보내면 터미널 코드페이지 문제로 `{"detail":"There was an error parsing the body"}`가 발생할 수 있습니다(실제로 재현됨). 이런 smoke test는 영어 payload로 검증하고, 한글 데이터 검증은 `/docs`(Swagger UI)나 브라우저에서 직접 진행하는 것이 안전합니다. 이 내용은 [.claude/CLAUDE.md](../.claude/CLAUDE.md)에도 기록해두었습니다.
-
-## 6. `/docs`에서 확인하기
-
-`http://127.0.0.1:8001/docs`에 접속하면 위 5개 라우트가 요청/응답 스키마(`PostCreate`, `PostResponse`)와 함께 자동 문서화된 것을 볼 수 있고, 브라우저에서 바로 "Try it out"으로 한글 데이터를 포함한 요청도 테스트할 수 있습니다.
-
-다음 문서(study3)부터는 `Depends()`로 의존성을 주입하고, `main.py` 하나에 몰려있던 코드를 `routers/`, `schemas.py` 등으로 구조화합니다.
+단위가 서로를 부를 수 있게 되었으면, study3에서 그 사이로 오가는 데이터의 모양을 Pydantic 스키마로 고정한다.

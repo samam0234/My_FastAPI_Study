@@ -1,112 +1,128 @@
-# study1. 만드는 방법 및 명령어, 실습1
+# study1. Hello World와 기본 문법
 
-Notion 학습 목표 대응: **설치/실행**
+## ① 목표
 
-이 문서부터는 실제로 동작하는 코드를 `demo/` 폴더에 만듭니다. `demo/`는 study1~study10에 걸쳐 계속 기능이 누적되는 하나의 FastAPI 프로젝트입니다.
+첫 JSON 응답을 띄우고, 함수가 경로가 되는 방식과 자동 새로고침을 확인한다.
 
-## 1. 개발 환경 준비
+## ② 📖 이론
 
-```bash
-# demo 프로젝트 전용 가상환경 생성
-python -m venv demo/.venv
+### 왜 쓰는지
 
-# 가상환경 활성화 (Windows PowerShell)
-demo/.venv/Scripts/Activate.ps1
+FastAPI에는 HTML 템플릿이 기본이 아니다. 화면 대신 JSON을 돌려주고, 그 JSON을 나중에 프론트가 그린다. 첫 응답은 "서버가 내 함수를 실행했다"는 증거다.
 
-# FastAPI + ASGI 서버(uvicorn) 설치
-pip install fastapi "uvicorn[standard]"
+### 핵심 개념
 
-# 설치 확인
-pip show fastapi uvicorn
-```
+- `@app.get("/health")`: GET 요청이 이 주소로 오면 바로 아래 함수를 실행한다.
+- 함수가 `dict`를 반환하면 FastAPI가 JSON으로 바꾼다.
+- 타입 힌트 `-> dict`는 사람을 위한 설명이고, 응답 모델을 붙이면 문서와 검증에도 쓰인다.
+- `--reload`는 저장할 때마다 프로세스를 다시 시작한다.
 
-- 가상환경(`venv`)은 프로젝트마다 독립적인 패키지 공간을 만들어줍니다. `demo/`와 `project/`는 각각 별도의 `.venv`를 가지며, 둘 다 Git에는 커밋하지 않습니다(`.gitignore` 참고).
-- `uvicorn[standard]`로 설치하면 `watchfiles`(코드 변경 감지), `websockets` 등 개발 편의 패키지가 함께 설치됩니다.
-- 설치한 패키지 목록은 `pip freeze > requirements.txt`로 기록해둡니다.
+### 비유
 
-## 2. Django와의 명령어 대응
+경로는 초인종 버튼이다. 버튼마다 다른 사람이 나와 다른 쪽지를 건넨다. `/health` 쪽지에는 "살아 있다"만 적혀 있다.
 
-Django는 `django-admin startproject`로 정해진 폴더 구조를 생성해주지만, FastAPI는 그런 스캐폴딩 명령어가 없습니다. 그냥 Python 패키지/모듈 구조를 원하는 대로 만들면 됩니다. 이 커리큘럼에서는 study1에서 파일 하나(`main.py`)로 시작해서, study3부터 여러 모듈로 구조화합니다.
+## ③ 🛠️ 실기
 
-| Django | FastAPI |
-|---|---|
-| `django-admin startproject config .` | (없음 — `main.py` 파일 직접 작성) |
-| `python manage.py startapp <이름>` | (없음 — 패키지/모듈을 직접 추가) |
-| `python manage.py runserver` | `uvicorn main:app --reload` |
-| `python manage.py migrate` | (study4에서 `Base.metadata.create_all()`로 대응) |
-
-## 3. 첫 애플리케이션 작성
-
-`demo/main.py`:
+`demo/app/main.py`에서 첫 화면 역할을 하는 경로는 세 개다. 앱 생성과 이 경로만 떼어 보면 다음과 같다.
 
 ```python
 from fastapi import FastAPI
 
-app = FastAPI(title="FastAPI Demo")
+app = FastAPI(title="FastAPI Demo", version="1.0.0")
 
+@app.get("/health", tags=["health"])
+def health_check():
+    return {"status": "ok"}
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello, FastAPI!"}
+    return {"message": "Hello, FastAPI!", "docs": "/docs", "health": "/health"}
 
-
-@app.get("/hello")
+@app.get("/hello", tags=["hello"])
 def hello():
     return {"message": "board 라우트가 정상적으로 연결되었습니다."}
 ```
 
-- `FastAPI()` 인스턴스가 Django의 프로젝트 전체(설정 + 라우팅 테이블)에 해당하는 애플리케이션 객체입니다.
-- `@app.get("/경로")` 데코레이터가 붙은 함수를 **경로 오퍼레이션 함수(path operation function)**라고 부릅니다. Django의 `views.py` 함수 + `urls.py` 매핑이 한 번에 이루어지는 셈입니다.
-- 함수가 반환한 dict는 FastAPI가 자동으로 JSON으로 직렬화해서 응답합니다.
+줄별 설명:
 
-## 4. 실행 명령어
+1. `FastAPI` 클래스를 가져온다. 이 클래스의 인스턴스가 곧 웹 애플리케이션이다.
+2. 빈 줄.
+3. `app`이라는 이름의 앱을 만든다. `title`과 `version`은 `/docs` 화면에 나온다.
+4. 빈 줄.
+5. 데코레이터. `/health`로 들어오는 GET을 다음 함수에 연결하고 문서에서 health 그룹으로 묶는다.
+6. 함수 이름 `health_check`는 URL이 아니다. URL은 데코레이터의 문자열이다.
+7. 딕셔너리를 반환한다. 키 `status`, 값 `ok`. 공통 스펙의 건강 체크 본문과 같다.
+8. 빈 줄.
+9. 루트 `/` GET.
+10. 함수 정의.
+11. 사람이 브라우저로 루트를 열었을 때의 안내 메시지. 문서와 건강 체크 주소를 같이 알려 준다.
+12. 빈 줄.
+13. `/hello` GET. 라우터를 붙이기 전에 "내 앱이 응답하는가"를 보는 연습 경로다.
+14. 함수 정의.
+15. 연결 확인용 문장. 이 문장이 보이면 프로세스가 이 파일을 읽고 있다는 뜻이다.
 
-```bash
-uvicorn main:app --reload --port 8001
+실행:
+
+```powershell
+cd demo
+.venv\Scripts\Activate.ps1
+uvicorn app.main:app --reload --port 8001
 ```
 
-- `main:app` : `main.py` 모듈 안의 `app` 객체를 실행하라는 의미 (`<모듈>:<변수명>`)
-- `--reload` : 코드 변경 시 서버 자동 재시작 (개발용, 운영에서는 사용하지 않음)
-- `--port` : 포트 지정 (기본값 8000)
+확인할 주소:
 
-## 5. 자주 쓰는 명령어 정리
+- http://127.0.0.1:8001/
+- http://127.0.0.1:8001/hello
+- http://127.0.0.1:8001/health
+- http://127.0.0.1:8001/docs
 
-| 명령어 | 설명 |
-|---|---|
-| `uvicorn main:app --reload` | 개발 서버 실행 (자동 재시작) |
-| `uvicorn main:app --host 0.0.0.0 --port 8001` | 호스트/포트 지정 실행 |
-| `pip freeze > requirements.txt` | 현재 설치된 패키지 목록 저장 |
-| `pip install -r requirements.txt` | 저장된 패키지 목록으로 복원 |
-| `pytest` | 테스트 실행 (study9에서 도입) |
+`/docs`는 Swagger UI다. 경로 목록이 비어 있지 않고 `health`, `hello`가 보이면 앱 객체가 문서를 만든 것이다.
 
-## 6. 자동 생성되는 문서 확인
+브라우저 개발자 도구(F12) → Network → `/health`를 새로고침한다.
 
-서버를 실행한 뒤 별도 설정 없이 아래 주소로 접속하면 API 문서를 바로 확인할 수 있습니다.
+- Method는 GET
+- Status는 200
+- Response는 `{"status":"ok"}`
+- Content-Type은 `application/json`
 
-- `http://127.0.0.1:8001/docs` : Swagger UI
-- `http://127.0.0.1:8001/redoc` : ReDoc
+`hello()`의 문자열을 조금 바꾼 뒤 저장한다. 터미널에 `Reloading...`이 보이고, 새로고침한 응답 본문이 바뀌면 자동 새로고침이 동작한 것이다. 브라우저 캐시가 의심되면 Network에서 Disable cache를 켠다.
 
-## 7. 실습1: 첫 라우트 띄우기 + 확인
+템플릿 표현은 이 프레임워크의 기본 응답에 없다. 문자열 포매팅이 필요하면 파이썬 f-string으로 JSON 값을 만든다.
 
-`demo/` 폴더에서 진행한 실습 내용입니다.
-
-1. `demo/.venv` 가상환경 생성 후 `fastapi`, `uvicorn[standard]` 설치
-2. `demo/main.py`에 `/`, `/hello` 두 개의 라우트 작성
-3. `uvicorn main:app --reload --port 8001`로 서버 실행
-4. `curl`로 두 라우트와 `/docs`가 정상 응답하는지 확인
-5. `pip freeze > requirements.txt`로 의존성 기록
-
-### 확인 결과
-
-```bash
-$ curl http://127.0.0.1:8001/
-{"message":"Hello, FastAPI!"}
-
-$ curl http://127.0.0.1:8001/hello
-{"message":"board 라우트가 정상적으로 연결되었습니다."}
-
-$ curl -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8001/docs
-200
+```python
+def hello_name(name: str = "FastAPI"):
+    return {"message": f"Hello, {name}"}
 ```
 
-정상적으로 응답이 오는 것을 확인했습니다. 다음 문서(study2)부터는 이 커리큘럼의 공통 스펙인 `/posts` CRUD를 Path/Query 파라미터와 Pydantic 스키마로 만들어봅니다.
+`f"..."` 안의 `{name}`이 템플릿에서 변수 자리와 같은 역할이다. HTML로 뿌리지 않으므로 XSS 문맥은 프론트 쪽 이야기다.
+
+## ④ 🔗 연동 포인트
+
+`/health`는 앞에 `/api`를 붙이지 않는다. 이후 게시글과 회원은 `/api` 아래로 모으고, 살아 있는지만 보는 경로는 루트 근처에 둔다. 배포 뒤에도 이 주소로 프로세스가 응답하는지 확인한다. 프론트는 이 JSON을 화면에 그리지 않고, 개발 중에는 Network 탭으로 상태 코드와 본문만 보면 된다.
+
+## ⑤ 오류 노트
+
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| `Could not import module "app.main"` | 실행 위치가 `demo`가 아님 | `cd demo` 후 다시 uvicorn |
+| 새로고침해도 옛 문장 | reload가 꺼져 있거나 다른 포트 | 명령에 `--reload`가 있는지, 포트가 8001인지 확인 |
+| `/docs`가 열리지 않음 | 서버가 죽음 | 터미널의 Traceback을 먼저 읽는다 |
+| 브라우저가 HTML 오류 페이지 | 주소가 백엔드가 아님 | `127.0.0.1:8001`인지 확인. 3000은 프론트 포트다 |
+
+## ⑥ 직접 해보기
+
+1. `/hello` 문장을 바꾸고 저장한 뒤, Network 탭에서 응답이 바뀌었는지 확인한다.
+2. Swagger의 hello 항목에서 Try it out → Execute를 눌러 같은 JSON이 나오는지 본다.
+3. 없는 주소 `/no-such`를 연다. 상태 코드가 404이고 본문에 `error.code`가 있는지만 메모한다. 형식은 study4에서 맞춘다.
+
+## ⑦ ☐ 체크리스트
+
+- [ ] `GET /`와 `GET /hello`가 JSON을 반환한다.
+- [ ] `GET /health`가 `{"status":"ok"}`이다.
+- [ ] `--reload`로 저장 즉시 서버가 다시 뜬다.
+- [ ] 개발자 도구 Network에서 상태 코드와 Content-Type을 읽었다.
+- [ ] `/docs`에서 경로 목록을 열었다.
+
+## ⑧ 다음 단계
+
+한 파일의 함수에서 응답이 나왔으면, study2에서 그 함수를 라우터·서비스로 나누고 의존성 주입으로 서로 부르게 한다.

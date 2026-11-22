@@ -1,126 +1,117 @@
-# study8. 고급 기술 구현 3 — CORS, 예외 핸들러
+# study8. 구조화와 재사용
 
-Notion 학습 목표 대응: **CORS, 예외 핸들러**
+## ① 목표
 
-FastAPI는 API 전용 서버라서, 실제로는 React/Vue 같은 별도 프론트엔드(다른 origin)에서 호출되는 경우가 많습니다. 이번 문서에서는 **CORS 설정**으로 그걸 허용하고, 지금까지 라우트마다 제각각이던 에러 응답을 **전역 예외 핸들러**로 통일합니다.
+폴더와 설정을 나눠 같은 규칙을 한 곳에서만 고치게 만들고, 개발용 값과 운영용 값을 코드 밖으로 뺀다.
 
-## 1. CORS(Cross-Origin Resource Sharing)란?
+## ② 📖 이론
 
-브라우저는 기본적으로 "지금 보고 있는 페이지의 origin(스킴+호스트+포트)"과 다른 origin으로의 요청을 보안상 제한합니다. 예를 들어 `http://localhost:3000`(React 개발 서버)에서 `http://127.0.0.1:8001`(FastAPI)로 fetch 요청을 보내면, 서버가 "이 origin은 허용한다"고 명시적으로 응답하지 않는 한 브라우저가 응답을 막아버립니다.
+### 왜 쓰는지
 
-`app/main.py`:
+CORS 허용 출처를 라우터마다 적으면 하나를 빼먹기 쉽다. 예외 문장도 라우터마다 `{"detail": ...}`로 만들면 화면이 두 가지 형식을 처리해야 한다. 공통 모듈로 올리면 등록은 `main.py` 한 번이다.
+
+### 핵심 개념
+
+- `config.py`: `.env`를 `Settings`로 읽는다. `get_settings()`는 캐시해서 파일을 매번 다시 읽지 않는다.
+- `exceptions.py`: HTTP 오류, 검증 오류, 예상 못한 오류를 한 JSON으로 만든다.
+- `middleware.py`: `X-Request-Id`.
+- `security.py`: 해시와 JWT. DB를 모른다.
+- 개발과 운영의 차이는 코드 분기가 아니라 `.env`의 값이다. 개발은 SQLite와 짧은 연습용 키, 운영은 긴 `SECRET_KEY`와 서버 DB URL, 실제 프론트 출처다.
+
+### 비유
+
+건물 수위실이 `main.py`다. 출입 명단(CORS), 사고 일지 양식(예외 핸들러), 방문증 번호(request id)를 수위실에서만 나눈다. 각 사무실(라우터)이 명단을 따로 복사해 두지 않는다.
+
+## ③ 🛠️ 실기
+
+`demo/app/main.py`와 `project/app/main.py`의 공통 조립은 같다. project만 업로드·AI·웹소켓을 더 등록한다.
 
 ```python
-from fastapi.middleware.cors import CORSMiddleware
-
+app.add_middleware(RequestIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-Id"],
 )
-```
-
-- `allow_origins`: 허용할 프론트엔드 주소 목록. 운영에서는 `["https://myapp.com"]`처럼 실제 배포 도메인만 명시하는 것이 안전합니다(`["*"]`는 `allow_credentials=True`와 함께 쓸 수 없고, 실습 이상의 환경에서는 지양).
-- `allow_credentials=True`: 쿠키/Authorization 헤더를 포함한 요청을 허용.
-- 브라우저는 실제 요청 전에 `OPTIONS` 메서드로 "이 요청 보내도 되는지" 먼저 물어보는 **프리플라이트(preflight)** 요청을 보냅니다. `CORSMiddleware`가 이 프리플라이트에 자동으로 응답해줍니다.
-
-### 동작 확인
-
-```bash
-$ curl -i -X OPTIONS http://127.0.0.1:8001/posts \
-    -H "Origin: http://localhost:3000" \
-    -H "Access-Control-Request-Method: POST" \
-    -H "Access-Control-Request-Headers: content-type"
-HTTP/1.1 200 OK
-access-control-allow-methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
-access-control-allow-credentials: true
-access-control-allow-origin: http://localhost:3000
-access-control-allow-headers: content-type
-
-$ curl -i -X OPTIONS http://127.0.0.1:8001/posts \
-    -H "Origin: http://evil.example.com" \
-    -H "Access-Control-Request-Method: POST"
-HTTP/1.1 400 Bad Request   # access-control-allow-origin 헤더 자체가 없음
-```
-
-허용 목록에 없는 `evil.example.com`은 `access-control-allow-origin` 헤더 없이 400으로 거부되는 것을 확인했습니다 — 브라우저는 이 응답을 받으면 실제 요청을 보내지 않고 차단합니다.
-
-## 2. 전역 예외 핸들러로 에러 포맷 통일
-
-지금까지는 `HTTPException`(404/401/403)은 `{"detail": "..."}`, Pydantic 검증 실패(422)는 FastAPI 기본 포맷(`{"detail": [{"type":..., "loc":...}, ...]}`), 예상 못한 버그는 스택트레이스가 그대로 노출될 수 있는 500까지 — 상황마다 응답 형태가 달랐습니다. `app/exceptions.py`에서 세 종류를 각각 핸들러로 정리했습니다.
-
-```python
-async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    """HTTPException(404, 401, 403 등)을 공통 포맷으로 응답한다."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail},
-        headers=getattr(exc, "headers", None),
-    )
-
-
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """Pydantic 검증 실패(422)를 프론트엔드가 다루기 쉬운 형태로 통일한다."""
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": "요청 데이터가 올바르지 않습니다.", "errors": exc.errors()},
-    )
-
-
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """예상하지 못한 예외(버그)는 500으로 감싸고, 상세 내용은 서버 로그에만 남긴다."""
-    logger.exception("unhandled error while processing %s %s", request.method, request.url)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "서버 내부 오류가 발생했습니다."},
-    )
-```
-
-`app/main.py`에서 등록:
-
-```python
+app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
 ```
 
-- 세 핸들러 덕분에 이제 **어떤 종류의 에러든 클라이언트는 항상 `{"detail": ...}` 키를 기대할 수 있습니다.** 프론트엔드에서 에러 처리 로직을 한 곳으로 통일할 수 있다는 뜻입니다.
-- 특히 `unhandled_exception_handler`가 중요합니다. 버그로 인한 예외(예: `None` 참조, 잘못된 타입 연산 등)가 그대로 밖으로 나가면 스택트레이스에 서버 내부 경로, 사용 중인 라이브러리 버전 같은 정보가 노출될 수 있습니다. `logger.exception(...)`으로 **서버 로그에는 전체 스택트레이스를 남기되, 클라이언트에게는 "서버 내부 오류가 발생했습니다"라는 안전한 메시지만** 돌려줍니다.
-- 확인용으로 `app/main.py`에 일부러 예외를 던지는 `/debug/boom` 라우트를 추가했습니다.
+줄별 설명:
 
-## 3. 실습8: 세 가지 에러 케이스 확인
+1. 요청 id 미들웨어를 먼저 등록한다. 나중에 등록할수록 더 바깥이라, CORS가 이 미들웨어를 감싼다.
+2. CORS 등록 시작.
+3. Starlette가 브라우저 출처를 검사할 때 쓰는 클래스.
+4. `.env`의 `CORS_ORIGINS`. 코드에 `localhost:3000`을 하드코딩하지 않는다.
+5. 인증 헤더를 브라우저가 보내도 되게 한다.
+6. GET만 열었다가 DELETE가 막히는 일을 피하려고 메서드는 모두 연다.
+7. `Authorization`과 `Idempotency-Key`, `X-Request-Id`를 막지 않는다.
+8. 브라우저의 자바스크립트가 `X-Request-Id`를 읽을 수 있게 노출한다.
+9. CORS 등록 끝.
+10. 우리가 던진 `AppError`를 `error.code` JSON으로 바꾼다.
+11. 라우트가 없는 404처럼 프레임워크가 던진 HTTP 오류도 같은 모양으로 바꾼다.
+12. 검증 오류를 400과 `fields`로 바꾼다.
+13. 그 외 예외는 로그에만 스택을 남기고 500 `INTERNAL`과 일반 문장을 준다.
 
-```bash
-uvicorn app.main:app --reload --port 8001
+예외 핸들러가 500 본문에 `str(exc)`를 넣지 않는 이유는 파일 경로와 SQL이 사용자에게 가지 않게 하기 위해서다. `demo`의 `GET /debug/boom`이 일부러 `ValueError`를 던진다. 응답 본문에는 그 문장이 없고 코드만 `INTERNAL`이다. 테스트 클라이언트는 기본적으로 이런 예외를 다시 던지므로, 응답 JSON을 보려면 `TestClient(..., raise_server_exceptions=False)`가 필요하다. uvicorn으로 띄운 서버는 그 옵션 없이 JSON을 돌려준다.
+
+설정 클래스의 기본값은 개발용이다. 운영에서는 같은 변수 이름에 다른 값을 넣는다.
+
+```env
+DATABASE_URL=sqlite:///./demo.db
+SECRET_KEY=change-me-to-a-long-random-value
+CORS_ORIGINS=["http://localhost:3000"]
 ```
 
-### 404 (HTTPException)
+운영 예시:
 
-```bash
-$ curl -o - -w "\n%{http_code}\n" http://127.0.0.1:8001/posts/999
-{"detail":"post 999를 찾을 수 없습니다."}
-404
+```env
+DATABASE_URL=postgresql+psycopg://user:password@db:5432/demo
+SECRET_KEY=길고-무작위한-값
+CORS_ORIGINS=["https://board.example.com"]
 ```
 
-### 422 (검증 실패, 공통 포맷)
+코드의 `if production` 분기는 없다.
 
-```bash
-$ curl -o - -w "\n%{http_code}\n" -X POST http://127.0.0.1:8001/auth/register \
-    -H "Content-Type: application/json" -d '{"username":"charlie"}'
-{"detail":"요청 데이터가 올바르지 않습니다.","errors":[{"type":"missing","loc":["body","password"],"msg":"Field required","input":{"username":"charlie"}}]}
-422
-```
+중복을 줄인 자리:
 
-### 500 (예상하지 못한 예외)
+- 페이지 쿼리는 `PageParams` 하나.
+- 404 문장은 `get_post_or_404` 하나.
+- 오류 JSON은 핸들러 하나.
+- 회원 공개 필드는 `UserResponse` 하나.
 
-```bash
-$ curl -o - -w "\n%{http_code}\n" http://127.0.0.1:8001/debug/boom
-{"detail":"서버 내부 오류가 발생했습니다."}
-500
-```
+## ④ 🔗 연동 포인트
 
-서버 로그에는 `ValueError: 일부러 발생시킨 예외입니다.`와 전체 스택트레이스가 남았지만, 클라이언트 응답에는 그 내용이 전혀 노출되지 않은 것을 확인했습니다.
+study7에서 설명한 CORS가 실제로 등록되는 곳이 이 파일이다. study4의 `requestId`도 여기서 미들웨어로 붙는다. study10과 study16은 이 `.env`를 배포 환경의 변수로 옮긴다. 개발 PC의 `.env`를 서버에 복사하지 않고, 서버의 환경 변수 화면에 같은 키를 다시 입력한다.
 
-다음 문서(study9)에서는 지금까지 `curl`로 손으로 확인해온 것들을 **pytest 테스트 코드**로 자동화합니다.
+## ⑤ 오류 노트
+
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| 브라우저만 CORS 오류 | 출처가 목록에 없음 | `CORS_ORIGINS`에 스킴과 포트까지 같은 문자열을 넣는다 |
+| `.env`를 고쳤는데 반영이 안 됨 | 설정이 프로세스 시작 때 캐시됨 | uvicorn을 재시작. `--reload`면 저장만으로 되는 경우가 많다 |
+| 500 응답에 스택이 보임 | 일반 예외 핸들러가 없음 | `Exception` 핸들러가 일반 문장만 반환하는지 확인 |
+| 테스트에서 boom이 예외로 실패 | TestClient의 기본값 | `raise_server_exceptions=False` |
+
+## ⑥ 직접 해보기
+
+1. `CORS_ORIGINS`에서 3000을 빼 보고 브라우저 콘솔의 CORS 문장을 확인한 뒤 되돌린다.
+2. `/debug/boom`을 uvicorn으로 호출해 본문에 `ValueError`가 없는지 본다.
+3. `SECRET_KEY`를 `.env`에서만 바꾸고, `security.py` 안에 키 문자열이 없는지 검색한다.
+
+## ⑦ ☐ 체크리스트
+
+- [ ] 라우터에 CORS와 오류 JSON을 복사해 두지 않았다.
+- [ ] 비밀키와 DB 주소는 `Settings`만 읽는다.
+- [ ] 개발용 기본값과 운영용 `.env`가 같은 키를 쓴다.
+- [ ] 예상 못한 예외의 스택은 로그에만 있다.
+- [ ] CORS, 예외 핸들러
+
+## ⑧ 다음 단계
+
+조립이 한곳으로 모였으면 study9에서 이 경로들을 서버를 띄우지 않고 테스트하고, DB는 테스트용으로 바꿔 끼운다.

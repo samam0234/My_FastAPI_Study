@@ -1,170 +1,109 @@
-# study7. 고급 기술 구현 2 — JWT 인증 (`/auth/login`)
+# study7. 인증과 보안 기초
 
-Notion 학습 목표 대응: **JWT 인증**
+## ① 목표
 
-공통 스펙의 마지막 조각인 `/auth/login`을 완성합니다. 로그인하면 JWT(JSON Web Token)를 발급하고, `/posts` 작성/수정/삭제는 이 토큰을 가진 사용자만 할 수 있도록 만듭니다. 더 나아가 "본인 글만 수정/삭제 가능"한 소유권 검사도 추가합니다.
+회원가입과 로그인으로 JWT를 발급하고, 토큰으로 사용자를 확인하며, 비밀번호와 브라우저 출처를 함부로 다루지 않는다.
 
-## 1. 세션(Django) vs JWT(FastAPI)
+## ② 📖 이론
 
-- Django는 기본적으로 **세션 기반 인증**을 씁니다. 로그인하면 서버가 세션을 DB/캐시에 저장하고, 브라우저에는 세션 id가 담긴 쿠키만 내려줍니다. 서버가 "누가 로그인했는지"를 기억합니다(stateful).
-- FastAPI(API 서버)는 보통 **JWT 기반 인증**을 씁니다. 로그인 성공 시 사용자 정보를 담은 토큰을 암호 서명해서 발급하고, 이후 요청마다 클라이언트가 `Authorization: Bearer <토큰>` 헤더로 그 토큰을 실어 보냅니다. 서버는 세션을 저장할 필요 없이 **토큰 서명만 검증**하면 되어(stateless) 여러 서버로 수평 확장하기 쉽습니다.
+### 왜 쓰는지
 
-```bash
-pip install "python-jose[cryptography]" python-multipart
+누구의 글인지 알려면 요청마다 신원을 실어야 한다. 세션은 서버가 표를 기억한다. JWT는 서명한 문자열이라 서버 표 없이도 검증할 수 있다. 대신 로그아웃은 "그 문자열을 잊어라"고 서버에 말해야 하므로, 이 앱은 토큰 id(`jti`)를 메모리 폐기 목록에 넣는다.
+
+### 핵심 개념
+
+- 비밀번호는 `passlib`의 `pbkdf2_sha256`으로만 저장한다. 원문은 저장하지 않고, 응답 스키마에도 넣지 않는다.
+- `POST /api/auth/signup` 201, `POST /api/auth/login` 200, `GET /api/auth/me` 200, `POST /api/auth/logout` 204.
+- 로그인 성공 본문:
+
+```json
+{ "data": { "user": { "id": 3, "email": "mina@example.com", "nickname": "mina" }, "accessToken": "eyJ..." } }
 ```
 
-- `python-jose`: JWT를 만들고(encode) 검증하는(decode) 라이브러리.
-- `python-multipart`: FastAPI가 폼 데이터(`application/x-www-form-urlencoded`, 파일 업로드 등)를 파싱하는 데 필요합니다. 로그인에 쓰는 `OAuth2PasswordRequestForm`이 내부적으로 폼 파싱을 사용하므로 반드시 설치해야 합니다(없으면 서버 실행 시 에러가 납니다).
+- 다음 요청은 `Authorization: Bearer <accessToken>`.
+- `get_current_user`가 서명을 확인하고, DB에 그 이메일이 아직 있는지도 다시 본다.
+- 글 수정·삭제는 먼저 404, 그 다음 작성자가 아니면 403 `FORBIDDEN`.
+- **CORS**: 브라우저는 `localhost:3000`에서 `127.0.0.1:8000`을 부를 때 출처가 다르다고 보고 막는다. `CORSMiddleware`의 `CORS_ORIGINS`에 프론트 주소를 넣어야 실제 브라우저 요청이 통과한다.
+- **XSS**: API는 HTML을 렌더링하지 않는다. React는 텍스트를 이스케이프한다. 응답 문자열을 `dangerouslySetInnerHTML`에 넣지 않는다.
+- **CSRF**: 이 앱은 쿠키가 아니라 Authorization 헤더를 쓴다. 다른 사이트의 폼이 우리 쿠키를 몰래 붙이는 유형의 공격은 이 방식에서 성립하기 어렵다. 쿠키로 바꾸는 날에는 CSRF 토큰이 다시 필요해진다.
 
-## 2. 토큰 발급 함수
+### 비유
 
-`app/security.py`에 추가:
+토큰은 기간이 적힌 출입증이다. 경비(`get_current_user`)는 도장을 확인하고, 명단에 이름이 있는지도 본다. 분실 신고(`logout`)가 된 출입증은 도장이 맞아도 들여보내지 않는다. 비밀번호 해시는 지문 기록이지, 열쇠를 서랍에 그대로 넣는 일이 아니다.
+
+## ③ 🛠️ 실기
+
+해시와 발급은 `app/security.py`에 있다.
 
 ```python
-SECRET_KEY = "study-only-secret-key-do-not-use-in-production"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
+def hash_password(plain_password: str) -> str:
+    return pwd_context.hash(plain_password)
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(subject: str, expires_delta: timedelta | None = None) -> tuple[str, str]:
+    jti = str(uuid.uuid4())
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    payload = {"sub": subject, "exp": expire, "jti": jti}
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return token, jti
 ```
 
-- `SECRET_KEY`는 서버만 알고 있는 값으로, 이 키로 서명한 토큰만 "우리 서버가 발급한 진짜 토큰"임을 검증할 수 있습니다. 실습용으로 하드코딩했지만, 실제 서비스에서는 반드시 `.env` 등 환경변수로 분리해야 합니다(study10에서 설정 관리를 다룰 때 정리).
-- `exp` 클레임으로 만료 시각을 넣어두면, 만료된 토큰은 서명이 맞아도 `jwt.decode()`가 자동으로 거부합니다.
+줄별 설명:
 
-## 3. `/auth/login` 라우트
+1. 해시 알고리즘을 pbkdf2_sha256 하나로 고정한다. bcrypt는 환경마다 설치가 달라 학습 기본값으로 쓰지 않는다.
+2. 빈 줄.
+3. 평문을 해시로 바꾼다. 같은 비밀번호도 호출마다 다른 문자열이 된다.
+4. passlib이 salt를 포함해 저장용 문자열을 만든다.
+5. 빈 줄.
+6. 로그인 때 평문과 저장값을 비교한다. 비교 결과를 뒤집어서 "왜 틀렸는지"를 설명하지 않는다.
+7. 일치하면 True.
+8. 빈 줄.
+9. 이메일(`subject`)을 담은 토큰과 폐기용 id를 함께 돌려준다.
+10. 토큰마다 고유한 jti.
+11. 만료 시각은 UTC다. 설정이 없으면 `ACCESS_TOKEN_EXPIRE_MINUTES`.
+12. `sub`는 누구의 토큰인지, `exp`는 언제 죽는지, `jti`는 폐기 목록의 키다.
+13. `SECRET_KEY`로 서명한다. 이 키가 새면 아무 토큰이나 만들 수 있다.
+14. 문자열과 jti를 반환한다.
 
-`app/routers/auth.py`:
+`get_current_user`는 `OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)`로 헤더에서 문자열을 꺼낸다. 없거나, 서명이 틀리거나, 폐기되었거나, 그 사이 회원이 지워졌으면 401 `UNAUTHORIZED`다.
 
-```python
-@router.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = store.get_user_by_username(db, form_data.username)
-    if user is None or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="username 또는 password가 올바르지 않습니다.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token = create_access_token(data={"sub": user.username})
-    return Token(access_token=access_token, token_type="bearer")
-```
+프론트는 로그인 응답의 `accessToken`과 사용자 `id`를 `localStorage`의 `auth`에 넣는다. 새로고침 뒤에도 글 삭제 버튼(내 id와 `author.id`가 같을 때만)을 그릴 수 있다. 로그아웃은 서버에 POST한 뒤 localStorage를 지운다. 서버가 이미 401을 줘도 화면의 로그인 상태는 지운다.
 
-- `OAuth2PasswordRequestForm`은 FastAPI가 제공하는 표준 로그인 폼 스키마입니다. JSON이 아니라 `username=...&password=...` 형태의 폼 데이터를 받는다는 점이 다른 라우트와 다릅니다(OAuth2 표준 방식).
-- 아이디가 없거나 비밀번호가 study5에서 만든 `verify_password()` 검증을 통과하지 못하면 401을 반환합니다.
-- 성공하면 `{"sub": username}`을 담아 토큰을 발급합니다. `sub`(subject)는 JWT 표준 클레임으로 "이 토큰이 누구 것인가"를 나타냅니다.
+CORS 허용 목록의 기본값은 `http://localhost:3000`과 `http://localhost:5173`이다. 쿠키를 쓰지 않아도 브라우저의 cross-origin 요청에는 이 허용이 필요하다.
 
-## 4. 토큰 검증 의존성: `get_current_user`
+## ④ 🔗 연동 포인트
 
-`app/dependencies.py`:
+study6의 `author_id`와 토큰으로 찾은 `user.id`가 같아야 수정·삭제가 된다. 화면과 서버가 로그인 상태를 공유하는 방법은 쿠키가 아니라 `Authorization` 헤더와 `localStorage`다. 서버는 토큰만 믿고, 화면은 토큰이 있을 때만 보호된 버튼을 그린다. 실제 권한 판단은 항상 서버가 다시 한다.
 
-```python
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+## ⑤ 오류 노트
 
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| 토큰을 넣었는데 401 | `Bearer ` 접두어가 없음 | `Authorization: Bearer <token>` |
+| 로그아웃 후에도 글이 써짐 | 폐기 목록을 안 봄 | `is_revoked(jti)`를 `get_current_user`에서 확인 |
+| 브라우저만 실패하고 curl은 성공 | CORS 출처가 다름 | `CORS_ORIGINS`에 프론트 출처를 추가하고 서버 재시작 |
+| 비밀번호가 응답에 보임 | 응답 모델에 해시 필드를 넣음 | `UserResponse`에서 그 필드를 제거 |
+| 남의 글 수정이 200 | 404보다 403을 먼저 하거나 검사를 빠뜨림 | 존재 확인 다음에 `_check_owner` |
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-) -> models.User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="인증 정보를 확인할 수 없습니다.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str | None = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+## ⑥ 직접 해보기
 
-    user = store.get_user_by_username(db, username)
-    if user is None:
-        raise credentials_exception
-    return user
-```
+1. 로그인 JSON에서 `accessToken`을 복사해 `/api/auth/me`에 Bearer로 붙인다.
+2. 로그아웃한 같은 토큰으로 `/api/auth/me`를 다시 호출해 401을 확인한다.
+3. 두 계정으로 같은 글을 수정해 작성자가 아닌 쪽이 403인지 본다.
 
-- `OAuth2PasswordBearer(tokenUrl="auth/login")`는 요청의 `Authorization: Bearer <토큰>` 헤더에서 토큰 문자열을 자동으로 뽑아줍니다. `tokenUrl`은 실제 검증과는 무관하고, `/docs`의 "Authorize" 버튼이 어디로 로그인 요청을 보낼지 알려주는 용도입니다.
-- 이 함수 자체가 study3에서 배운 **의존성**입니다. `current_user: models.User = Depends(get_current_user)`처럼 라우트 인자에 선언하기만 하면, "로그인 여부 확인 + 로그인한 User 객체 조회"가 자동으로 이루어집니다.
-- 토큰이 없거나(`Not authenticated`는 `oauth2_scheme` 자체가 던짐), 위조/만료됐거나(`JWTError`), 토큰은 유효한데 그 사이 사용자가 삭제된 경우 모두 401로 처리합니다.
+## ⑦ ☐ 체크리스트
 
-## 5. `/posts` 보호 + 작성자(소유권) 검사
+- [ ] 비밀번호는 pbkdf2_sha256 해시로만 저장된다.
+- [ ] 로그인 응답에 `accessToken`과 사용자 정보가 `data` 안에 있다.
+- [ ] 토큰이 없거나 폐기되면 401이다.
+- [ ] 없는 글은 404, 남의 글은 403이다.
+- [ ] 화면은 localStorage의 토큰을 Authorization 헤더로 되돌린다.
+- [ ] JWT 인증
 
-- `POST /posts`: `current_user: models.User = Depends(get_current_user)`를 추가해 로그인한 사용자만 글을 쓸 수 있게 하고, `store.create_post(db, post, author_id=current_user.id)`로 작성자를 기록합니다. (`Post` 모델에 `author_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))` 컬럼을 추가했습니다.)
-- `PUT /posts/{id}`, `DELETE /posts/{id}`: 역시 로그인을 요구하고, 게시글의 `author_id`가 현재 로그인한 사용자와 다르면 `403 Forbidden`을 반환하는 `_check_owner()` 헬퍼로 소유권을 검사합니다.
-- `GET /posts`, `GET /posts/{id}`(조회)는 그대로 로그인 없이 열람 가능하게 두었습니다 — "쓰기만 보호"하는 흔한 정책입니다.
+## ⑧ 다음 단계
 
-## 6. 실습7: 전체 인증 흐름 확인
-
-```bash
-uvicorn app.main:app --reload --port 8001
-```
-
-### 인증 없이 글쓰기 시도 → 401
-
-```bash
-$ curl -o - -w "\n%{http_code}\n" -X POST http://127.0.0.1:8001/posts \
-    -H "Content-Type: application/json" -d '{"title":"no auth","content":"should fail","published":true}'
-{"detail":"Not authenticated"}
-401
-```
-
-### 로그인 → 토큰 발급
-
-```bash
-$ curl -X POST http://127.0.0.1:8001/auth/login \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=alice&password=secret123"
-{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", "token_type":"bearer"}
-```
-
-### 토큰으로 글쓰기 → author_id 자동 기록
-
-```bash
-$ curl -X POST http://127.0.0.1:8001/posts \
-    -H "Content-Type: application/json" -H "Authorization: Bearer <alice의 토큰>" \
-    -d '{"title":"study7 jwt post","content":"created by alice","published":true}'
-{"title":"study7 jwt post","content":"created by alice","published":true,"id":3,"author_id":1}
-```
-
-### 다른 사람(bob)이 alice 글을 수정 시도 → 403
-
-```bash
-$ curl -o - -w "\n%{http_code}\n" -X PUT http://127.0.0.1:8001/posts/3 \
-    -H "Content-Type: application/json" -H "Authorization: Bearer <bob의 토큰>" \
-    -d '{"title":"hijacked","content":"bob trying to edit","published":true}'
-{"detail":"본인이 작성한 글만 수정/삭제할 수 있습니다."}
-403
-```
-
-### 본인(alice)이 수정 → 200
-
-```bash
-$ curl -X PUT http://127.0.0.1:8001/posts/3 \
-    -H "Content-Type: application/json" -H "Authorization: Bearer <alice의 토큰>" \
-    -d '{"title":"study7 jwt post (edited)","content":"edited by alice","published":true}'
-{"title":"study7 jwt post (edited)","content":"edited by alice","published":true,"id":3,"author_id":1}
-```
-
-### 위조/조작된 토큰 → 401
-
-```bash
-$ curl -o - -w "\n%{http_code}\n" -X POST http://127.0.0.1:8001/posts \
-    -H "Authorization: Bearer garbage.token.value" \
-    -H "Content-Type: application/json" -d '{"title":"x","content":"y","published":true}'
-{"detail":"인증 정보를 확인할 수 없습니다."}
-401
-```
-
-로그인 없이 쓰기 차단(401), 다른 사람 글 수정 차단(403), 위조 토큰 차단(401), 본인 글 정상 처리(200/201)까지 네 가지 케이스를 모두 실제로 재현해 확인했습니다.
-
-`/docs`(Swagger UI) 오른쪽 위의 **Authorize** 버튼에 `username`/`password`를 입력하면 브라우저에서도 토큰 발급부터 인증이 필요한 라우트 호출까지 한 번에 테스트할 수 있습니다.
-
-다음 문서(study8)에서는 프론트엔드 연동을 위한 **CORS 설정**과, 지금까지 각 라우트에서 개별적으로 처리하던 에러를 **전역 예외 핸들러**로 통일합니다.
+신원 확인이 붙었으면 study8에서 폴더와 설정 파일을 정리해 개발용 값과 운영용 값이 코드 안에 섞이지 않게 한다.

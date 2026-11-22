@@ -1,123 +1,204 @@
-# study0. FastAPI 기초이론
+# study0. 환경 설정
 
-> 이 저장소는 [Notion: FastAPI 학습 목표](https://app.notion.com/p/FastAPI-3d6d7dec5e2e810fb6f5fa9e53bcb9a2) 페이지를 기준으로 진행합니다.
-> 최종 목표: **`/posts` CRUD + `/auth/login`**을 갖춘 API 서버를, 인메모리 → DB(SQLAlchemy) → JWT 인증 순서로 점진적으로 완성해보는 것.
+## ① 목표
 
-## 1. FastAPI란?
+FastAPI를 실행할 파이썬 환경을 만들고, 빈 프로젝트가 개발 서버로 뜨는 것까지 확인한다.
 
-FastAPI는 Python 타입힌트를 기반으로 하는 **API 전용(마이크로) 웹 프레임워크**입니다. Starlette(ASGI 웹 툴킷) 위에 Pydantic(데이터 검증 라이브러리)을 결합한 구조로, "빠르고(성능) + 빠르게 만들고(생산성) + 자동으로 문서화된다"는 세 가지를 핵심 가치로 내세웁니다.
+## ② 📖 이론
 
-- Netflix, Uber, Microsoft 등에서 내부 API 서버로 채택
-- 함수 시그니처의 타입힌트만으로 요청 검증 + 응답 직렬화 + API 문서(Swagger UI)가 자동 생성됨
-- Django/Flask와 달리 템플릿 엔진, Admin, ORM을 기본 내장하지 않음 — "API를 잘 만드는 것"에 집중
+### 왜 쓰는지
 
-### Django와 고를 점 (Notion 요약)
+FastAPI는 타입 힌트를 읽어 요청을 검증하고, Swagger 문서를 자동으로 만든다. 그 앞에서 필요한 것은 격리된 파이썬 환경이다. 전역 파이썬에 패키지를 깔면 다른 프로젝트와 버전이 섞인다.
 
-| 구분 | Django | FastAPI |
-|---|---|---|
-| 성격 | 풀스택(all-in-one) | API 전용 마이크로 프레임워크 |
-| ORM/Admin | 내장 | 없음(SQLAlchemy 등 직접 선택) |
-| 데이터 검증 | Form/Serializer | Pydantic(타입힌트 기반) |
-| 처리 방식 | 기본 동기(WSGI), ASGI는 선택 | 기본 비동기(ASGI) |
-| API 문서 | DRF 도입 시 수동 설정 | 기본 내장(Swagger/ReDoc 자동 생성) |
-| 적합한 상황 | 화면(템플릿)까지 한 번에 만들 때 | API 서버 성능·타입 안정성·문서화가 중요할 때 |
+### 핵심 개념
 
-두 프레임워크는 "웹 요청을 받아 데이터를 처리하고 응답한다"는 본질은 같지만, FastAPI는 그 중 **API 계층만 최소한의 구조로 빠르게** 만들도록 설계되어 있습니다.
+- **가상환경**: 이 폴더만 쓰는 파이썬과 pip.
+- **ASGI**: uvicorn이 FastAPI 앱을 받아 HTTP 요청을 넘기는 비동기 서버 규격.
+- **의존성 파일**: `requirements.txt`에 버전을 고정해 다른 컴퓨터에서도 같은 패키지를 깔 수 있게 한다.
+- **환경 변수**: DB 주소와 비밀키는 코드 밖 `.env`에 둔다.
 
-## 2. ASGI vs WSGI
+### 비유
 
-- **WSGI(Web Server Gateway Interface)**: 요청 하나당 스레드 하나가 동기적으로 처리. Django/Flask가 기본으로 사용하던 방식.
-- **ASGI(Asynchronous Server Gateway Interface)**: WSGI의 비동기 버전. 하나의 이벤트 루프가 여러 요청을 논블로킹으로 동시에 처리할 수 있어 WebSocket, 스트리밍, 대량 I/O 대기 작업에 유리.
-- FastAPI는 처음부터 **ASGI 네이티브**로 설계되었고, 실행 서버로는 [uvicorn](https://www.uvicorn.org/)(또는 hypercorn)을 사용합니다.
+가상환경은 실험실 칸막이다. 이 칸의 시약(패키지)이 옆 칸으로 흘러가지 않는다. `.env`는 칸 밖에 둔 열쇠 서랍이다.
 
-```
-[클라이언트]
-   │ HTTP 요청
-   ▼
-[uvicorn] (ASGI 서버, 이벤트 루프 실행)
-   ▼
-[FastAPI app] : 경로(path)와 일치하는 라우트 함수 탐색
-   │  - Pydantic으로 요청 바디/쿼리/경로 파라미터 검증
-   │  - Depends()로 의존성(DB 세션, 인증 등) 주입
-   │  - 라우트 함수 실행 (동기 또는 async def)
-   ▼
-[Pydantic 응답 모델] : 반환값을 JSON으로 직렬화
-   ▼
-[클라이언트] ◄── JSON 응답
+## ③ 🛠️ 실기
+
+이 저장소는 이미 `demo/`(기초·midpoint)와 `project/`(심화·final)로 나뉘어 있다. 새 연습을 처음부터 만들 때는 `demo`와 같은 순서를 따른다.
+
+### 1) 버전 확인
+
+```powershell
+python --version
+pip --version
 ```
 
-## 3. 동기(sync)와 비동기(async)
+학습 당시 앱이 기대하는 주요 버전은 `requirements.txt`에 고정되어 있다.
 
-- 라우트 함수는 `def`(동기) 또는 `async def`(비동기) 둘 다 정의할 수 있습니다.
-- `async def`로 만든 라우트 안에서 `await`가 필요한 비동기 작업(비동기 DB 드라이버, 비동기 HTTP 호출 등)을 논블로킹으로 처리하면, 하나의 워커가 그 시간 동안 다른 요청도 처리할 수 있습니다.
-- 반대로 `async def` 안에서 시간이 오래 걸리는 **동기(blocking) 코드**를 그냥 호출하면 이벤트 루프 전체가 멈춰버리는 역효과가 납니다. 이 경우 그냥 `def`로 만들면 FastAPI가 자동으로 별도 스레드풀에서 실행해줍니다.
-- 즉, "무조건 async가 빠르다"가 아니라 **"내가 쓰는 라이브러리가 진짜 비동기를 지원하는가"**가 기준입니다. 자세한 실습은 study6(비동기 라우트)에서 다룹니다.
+- Python 3.10 이상 (이 저장소 가상환경은 3.10, CI는 3.12)
+- fastapi 0.141.1
+- pydantic 2.13.5
+- sqlalchemy 2.0.52
+- uvicorn 0.52.4
 
-## 4. Pydantic: 타입힌트 기반 데이터 검증
+설치된 뒤에 확인한다.
 
-FastAPI의 핵심 축 중 하나는 [Pydantic](https://docs.pydantic.dev/)입니다.
-
-```python
-from pydantic import BaseModel
-
-class PostCreate(BaseModel):
-    title: str
-    content: str
-    published: bool = True
+```powershell
+pip show fastapi
+python -c "import fastapi; print(fastapi.__version__)"
+uvicorn --version
 ```
 
-- 클래스 필드에 붙인 타입힌트(`str`, `bool` 등)를 런타임에 실제로 검증합니다. 타입이 안 맞으면 자동으로 422 에러 응답을 만들어줍니다.
-- 요청 바디(Request Body)뿐 아니라 응답 모델(Response Model)로도 재사용되어, "어떤 데이터가 들어오고 나가는지"가 코드 자체로 문서화됩니다.
-- Django의 Form/DRF Serializer, 그리고 일반적인 "DTO(Data Transfer Object)"에 대응하는 개념이라고 이해하면 됩니다.
+### 2) 가상환경과 설치
 
-## 5. 자동 API 문서화
+```powershell
+cd demo
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
 
-FastAPI 앱을 실행하면 별도 설정 없이 아래 두 문서가 자동으로 생성됩니다.
+`Activate.ps1`이 막히면 PowerShell에서 현재 사용자만 스크립트를 허용한 뒤 다시 켠다.
 
-- `/docs` : Swagger UI (브라우저에서 직접 요청을 날려볼 수 있는 대화형 문서)
-- `/redoc` : ReDoc (읽기 좋은 정적 문서)
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
 
-라우트 함수의 타입힌트, Pydantic 모델, docstring이 그대로 문서에 반영되므로 "코드가 곧 문서"에 가깝습니다.
+### 3) 프로젝트 폴더
 
-## 6. 프로젝트 구성 요소 예고
+```text
+FastApi/
+├── study0.md ~ study10.md
+├── studyMidpoint.md
+├── study11.md ~ study18.md
+├── studyFinal.md
+├── demo/                  # 기초 실습 앱, 포트 8001
+│   ├── app/
+│   ├── tests/
+│   ├── frontend/
+│   ├── requirements.txt
+│   └── .env.example
+└── project/               # 심화까지 포함한 게시판, 포트 8000
+    ├── app/
+    ├── tests/
+    ├── frontend/
+    ├── examples/
+    ├── Dockerfile
+    └── docker-compose.yml
+```
 
-Django의 `manage.py` / `settings.py` / `urls.py`에 대응하는 FastAPI 쪽 개념은 다음과 같습니다.
+`app/` 안은 나중에 이렇게 나눈다. study0에서는 이름만 기억한다.
 
-| Django | FastAPI | 역할 |
-|---|---|---|
-| `manage.py runserver` | `uvicorn main:app --reload` | 개발 서버 실행 |
-| `urls.py` | `@app.get("/path")` 데코레이터, `APIRouter` | 경로 라우팅 |
-| `views.py` | 라우트 함수(경로 오퍼레이션 함수) | 요청 처리 로직 |
-| `models.py`(ORM) | SQLAlchemy/SQLModel 모델 (직접 선택) | DB 테이블 정의 |
-| Form/Serializer | Pydantic `BaseModel` (schemas) | 요청/응답 데이터 검증 |
-| 없음(직접 구현) | `Depends()` | 의존성 주입(DB 세션, 인증 등 공통 로직 재사용) |
+- `main.py`: 앱을 조립한다.
+- `routers/`: URL과 함수를 연결한다.
+- `schemas/`: 요청·응답 모양.
+- `models/`: DB 테이블.
+- `repositories/`: SQL만.
+- `services/`: 규칙(404, 403, 해시).
 
-Django처럼 "app" 단위로 강제 분리하지 않고, 프로젝트 구조는 자유롭게 설계합니다. 이 커리큘럼에서는 study3부터 `routers/`, `schemas.py`, `models.py`, `database.py`, `dependencies.py`로 구성된 구조를 사용합니다.
+### 4) 환경 변수 파일
 
-## 7. 이 커리큘럼의 로드맵
+```powershell
+copy .env.example .env
+```
 
-Notion 학습 목표를 아래와 같이 study 문서에 매핑했습니다.
+`.env.example`의 앞부분은 다음이다.
 
-| study 문서 | Notion 학습 목표 | 내용 |
-|---|---|---|
-| study0 | (선행 이론) | FastAPI 기초이론 |
-| study1 | 설치/실행 | 설치, 실행 명령어, 첫 라우트 실습 |
-| study2 | 경로, Path/Query, Pydantic 스키마 | `/posts` 인메모리 CRUD |
-| study3 | 의존성 주입 | `Depends`, `APIRouter`로 프로젝트 구조화 |
-| study4 | SQLAlchemy/SQLModel + MySQL | DB 연동, `/posts`를 DB 기반으로 전환 |
-| study5 | (회원 도메인 준비) | User 모델, 비밀번호 해시, 회원가입 |
-| study6 | 비동기 라우트 | `async def`, 블로킹 I/O, `BackgroundTasks` |
-| study7 | JWT 인증 | `/auth/login`, `OAuth2PasswordBearer` |
-| study8 | CORS, 예외 핸들러 | `CORSMiddleware`, 커스텀 예외 핸들러 |
-| study9 | 테스트코드로 API 테스트 | pytest + `TestClient` |
-| study10 | (마무리) | 설정 관리(`.env`), 페이지네이션/필터링 |
-| studyFinal | (종합) | 지금까지 배운 것으로 미니 게시판 API 프로젝트 |
+```env
+DATABASE_URL=sqlite:///./demo.db
+SECRET_KEY=change-me-to-a-long-random-value
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+```
 
-공통 스펙: **`/posts` CRUD + `/auth/login`**을 처음부터 끝까지 사용합니다. 저장소는 인메모리 리스트 → SQLAlchemy DB로, 인증은 없음 → JWT로 단계적으로 발전합니다.
+줄별 의미:
 
-## 8. 실습 프로젝트 구조 예고
+1. `DATABASE_URL`: SQLAlchemy 접속 문자열. 기본은 현재 폴더의 SQLite 파일.
+2. `SECRET_KEY`: JWT 서명 키. 학습용 값을 운영에 그대로 두면 안 된다.
+3. `ALGORITHM`: 서명 알고리즘. 이 앱은 HS256.
+4. `ACCESS_TOKEN_EXPIRE_MINUTES`: 로그인 토큰이 살아있는 시간(분).
 
-- `demo/` : study1~study10 실습 내용이 단계별로 누적되는 FastAPI 프로젝트
-- `project/` : studyFinal에서 만드는, 지금까지 배운 내용을 총정리한 완결된 미니 게시판 API
+`.env`는 `.gitignore`에 있다. example만 커밋한다.
 
-다음 문서(study1)부터 실제로 손을 움직여 프로젝트를 만들어봅니다.
+### 5) Git
+
+저장소가 이미 있다면 `git status`만 확인한다. 새 폴더에서 시작할 때는 다음이다.
+
+```powershell
+git init
+```
+
+루트 `.gitignore`는 가상환경, 바이트코드, SQLite, `.env`, 업로드 폴더를 제외한다.
+
+```gitignore
+.venv/
+__pycache__/
+*.db
+.env
+uploads/
+backups/
+```
+
+### 6) 개발 서버
+
+아직 라우트를 만들기 전이라도, 이 저장소의 `demo`는 바로 실행할 수 있다.
+
+```powershell
+uvicorn app.main:app --reload --port 8001
+```
+
+- `app.main:app`: `app/main.py` 안의 `app` 객체.
+- `--reload`: 코드가 저장되면 서버가 다시 뜬다.
+
+브라우저에서 `http://127.0.0.1:8001/health` 를 연다. `{"status":"ok"}` 가 보이면 환경은 준비된 것이다. 종료는 `Ctrl+C`.
+
+### 7) 에디터 확장
+
+Cursor 또는 VS Code에서 다음을 켠다.
+
+- Python (인터프리터를 `demo/.venv`로 선택)
+- Pylance (타입 힌트 경고)
+
+인터프리터를 가상환경으로 고르지 않으면 import 오류가 에디터에만 보인다.
+
+### 8) 이 프레임워크에서 반복되는 말
+
+| 용어 | 의미 |
+| --- | --- |
+| 경로(route) | URL과 함수의 연결 |
+| 스키마 | 들어오고 나가는 JSON의 모양 |
+| 의존성 | 요청마다 FastAPI가 대신 만들어 넣어 주는 값 |
+| ORM | 테이블 행을 파이썬 객체로 다루는 층 |
+| 상태 코드 | 200 성공, 201 생성, 204 본문 없음, 400 잘못된 입력, 401 로그인 필요, 403 권한 없음, 404 없음, 500 서버 오류 |
+
+## ④ 🔗 연동 포인트
+
+이 단계의 결과물은 다음 단계가 올라탈 바닥이다. Git 저장소가 있으면 study 문서와 코드를 같이 커밋할 수 있다. `.env`의 `DATABASE_URL`은 study6에서 MySQL 주소로 바꾸고, study11에서 PostgreSQL 주소로 바꾼다. 코드는 그 문자열만 읽는다.
+
+## ⑤ 오류 노트
+
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| `python`을 찾을 수 없음 | PATH에 파이썬이 없음 | python.org 설치 때 PATH를 켜거나 `py -3` 사용 |
+| Activate.ps1 실행 정책 오류 | PowerShell이 스크립트를 막음 | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| `No module named fastapi` | 가상환경을 안 켰거나 설치 전 | activate 후 `pip install -r requirements.txt` |
+| 포트가 이미 사용 중 | 예전 uvicorn이 살아 있음 | 그 터미널에서 Ctrl+C 하거나 `--port 8002` |
+| 에디터만 import 오류 | 인터프리터가 전역 파이썬 | 인터프리터를 `.venv`로 변경 |
+
+## ⑥ 직접 해보기
+
+1. `demo`에서 가상환경을 켜고 `pip show fastapi`의 버전이 `requirements.txt`와 같은지 확인한다.
+2. `.env.example`을 `.env`로 복사한 뒤 `SECRET_KEY`만 다른 문장으로 바꾼다. `.env`가 `git status`에 안 나와야 한다.
+3. `uvicorn app.main:app --reload --port 8001` 로 띄우고 `/health`를 새로고침한다. 코드를 저장하면 터미널에 reload가 찍히는지 본다.
+
+## ⑦ ☐ 체크리스트
+
+- [ ] Python 버전과 `pip show fastapi`를 확인했다.
+- [ ] `demo/.venv`를 만들고 `requirements.txt`를 설치했다.
+- [ ] 폴더 구조에서 `app`, `tests`, `frontend`의 역할을 말할 수 있다.
+- [ ] `.env`를 만들었고 Git에는 올라가지 않는 것을 확인했다.
+- [ ] `uvicorn ... --reload`로 `/health`가 `{"status":"ok"}`를 반환한다.
+- [ ] 에디터 인터프리터가 가상환경을 가리킨다.
+
+## ⑧ 다음 단계
+
+환경이 켜지면 study1에서 첫 JSON 응답과 자동 새로고침, 브라우저 개발자 도구로 그 응답을 읽는다.

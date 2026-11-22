@@ -1,91 +1,144 @@
-# ─────────────────────────────────────────────────────────────
-# test_posts.py : 게시글 CRUD API 테스트 (조회 / 인증 필요 / 소유자 권한 검사)
-# ─────────────────────────────────────────────────────────────
+"""게시글·댓글 CRUD와 공통 응답 형식."""
 
 
-# 앞의 "_"가 붙은 함수는 테스트가 아니라 여러 테스트가 같이 쓰는 도우미 함수 (pytest가 실행하지 않음).
-# 회원가입 → 로그인까지 한 번에 하고 access_token 문자열을 돌려준다.
-def _register_and_login(client, username="alice", password="secret123"):
-    client.post("/auth/register", json={"username": username, "password": password})
-    response = client.post("/auth/login", data={"username": username, "password": password})
-    return response.json()["access_token"]
-
-
-def test_list_posts_empty(client):
-    response = client.get("/posts")
-    assert response.status_code == 200
-    # 테스트 DB는 매번 비어 있으므로(시드 데이터 없음) 기본 페이지네이션 값과 함께 빈 목록이 나온다.
-    assert response.json() == {"items": [], "total": 0, "skip": 0, "limit": 10}
-
-
-def test_get_post_404(client):
-    response = client.get("/posts/999")  # 존재하지 않는 id
-    assert response.status_code == 404
-    assert response.json()["detail"] == "post 999를 찾을 수 없습니다."
-
-
-def test_create_post_requires_auth(client):
-    # Authorization 헤더 없이 글 작성 시도 → 401로 막혀야 한다.
-    response = client.post("/posts", json={"title": "t", "content": "c"})
-    assert response.status_code == 401
-
-
-def test_create_and_get_post(client):
-    token = _register_and_login(client)
-    # 인증 헤더: "Bearer <토큰>" 형식으로 보내야 get_current_user가 로그인 사용자를 인식한다.
-    headers = {"Authorization": f"Bearer {token}"}
-
-    response = client.post("/posts", json={"title": "hello", "content": "world"}, headers=headers)
-    assert response.status_code == 201
-    body = response.json()
-    assert body["title"] == "hello"
-    assert body["author_id"] is not None  # 작성자 id가 자동으로 채워졌는지 확인
-
-    # 방금 만든 글을 id로 다시 조회 (인증 없이도 조회 가능)
-    response = client.get(f"/posts/{body['id']}")
-    assert response.status_code == 200
-    assert response.json()["title"] == "hello"
-
-
-def test_update_post_forbidden_for_non_owner(client):
-    # alice가 글을 작성
-    token_alice = _register_and_login(client, "alice", "secret123")
-    created = client.post(
-        "/posts",
-        json={"title": "alice post", "content": "..."},
-        headers={"Authorization": f"Bearer {token_alice}"},
-    ).json()
-
-    # 다른 사용자 bob이 alice의 글을 수정하려 하면 403(권한 없음)이어야 한다.
-    token_bob = _register_and_login(client, "bob", "hunter2")
-    response = client.put(
-        f"/posts/{created['id']}",
-        json={"title": "hijack", "content": "..."},
-        headers={"Authorization": f"Bearer {token_bob}"},
+def _auth(client, email="mina@example.com", nickname="mina"):
+    client.post(
+        "/api/auth/signup",
+        json={"email": email, "password": "password123", "nickname": nickname},
     )
-    assert response.status_code == 403
+    logged = client.post("/api/auth/login", json={"email": email, "password": "password123"})
+    return logged.json()["data"]["accessToken"]
 
 
-def test_owner_can_update_and_delete(client):
-    token = _register_and_login(client)
+def test_health_and_request_id_and_empty_list(client):
+    health = client.get("/health", headers={"X-Request-Id": "req-1"})
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok"}
+    assert health.headers["x-request-id"] == "req-1"
+
+    listed = client.get("/api/posts")
+    assert listed.status_code == 200
+    assert listed.json() == {
+        "data": [],
+        "meta": {"page": 1, "limit": 10, "total": 0, "totalPages": 0, "q": ""},
+    }
+
+
+def test_missing_post_and_bad_id(client):
+    missing = client.get("/api/posts/999")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "NOT_FOUND"
+
+    bad = client.get("/api/posts/nope")
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "BAD_REQUEST"
+
+
+def test_create_requires_auth_and_validation(client):
+    denied = client.post("/api/posts", json={"title": "제목", "body": "본문"})
+    assert denied.status_code == 401
+    assert denied.json()["error"]["code"] == "UNAUTHORIZED"
+
+    token = _auth(client)
+    invalid = client.post(
+        "/api/posts",
+        json={"title": "", "body": "본문"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert invalid.status_code == 400
+    error = invalid.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert "1~200자로 입력하세요." in error["fields"]["title"]
+
+
+def test_create_get_search_and_camel_case(client):
+    token = _auth(client)
     headers = {"Authorization": f"Bearer {token}"}
     created = client.post(
-        "/posts", json={"title": "before", "content": "..."}, headers=headers
-    ).json()
-
-    # 본인 글 수정 → 200
-    response = client.put(
-        f"/posts/{created['id']}",
-        json={"title": "after", "content": "...", "published": False},
+        "/api/posts",
+        json={"title": "첫 글", "body": "안녕하세요", "tags": ["intro"]},
         headers=headers,
     )
-    assert response.status_code == 200
-    assert response.json()["title"] == "after"
+    assert created.status_code == 201
+    assert created.headers["location"].endswith(f"/api/posts/{created.json()['data']['id']}")
+    data = created.json()["data"]
+    assert data["title"] == "첫 글"
+    assert data["body"] == "안녕하세요"
+    assert data["tags"] == ["intro"]
+    assert data["author"]["nickname"] == "mina"
+    assert data["commentCount"] == 0
+    assert data["createdAt"].endswith("Z")
+    assert "created_at" not in data
+    assert "password" not in created.text
 
-    # 본인 글 삭제 → 204 (본문 없음)
-    response = client.delete(f"/posts/{created['id']}", headers=headers)
-    assert response.status_code == 204
+    fetched = client.get(f"/api/posts/{data['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["data"]["title"] == "첫 글"
 
-    # 삭제 후 다시 조회하면 404
-    response = client.get(f"/posts/{created['id']}")
-    assert response.status_code == 404
+    found = client.get("/api/posts", params={"q": "안녕", "page": 1, "limit": 10})
+    assert found.json()["meta"]["total"] == 1
+    assert found.json()["meta"]["q"] == "안녕"
+
+    missed = client.get("/api/posts", params={"q": "없는말"})
+    assert missed.json()["meta"]["total"] == 0
+
+
+def test_owner_patch_delete_and_other_user_forbidden(client):
+    alice = _auth(client, "alice@example.com", "alice")
+    created = client.post(
+        "/api/posts",
+        json={"title": "alice post", "body": "원문"},
+        headers={"Authorization": f"Bearer {alice}"},
+    ).json()["data"]
+
+    bob = _auth(client, "bob@example.com", "bob")
+    forbidden = client.patch(
+        f"/api/posts/{created['id']}",
+        json={"title": "hijack"},
+        headers={"Authorization": f"Bearer {bob}"},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["error"]["code"] == "FORBIDDEN"
+
+    updated = client.patch(
+        f"/api/posts/{created['id']}",
+        json={"title": "고친 글", "tags": ["edited"]},
+        headers={"Authorization": f"Bearer {alice}"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["data"]["title"] == "고친 글"
+    assert updated.json()["data"]["body"] == "원문"
+
+    deleted = client.delete(
+        f"/api/posts/{created['id']}",
+        headers={"Authorization": f"Bearer {alice}"},
+    )
+    assert deleted.status_code == 204
+    assert client.get(f"/api/posts/{created['id']}").status_code == 404
+
+
+def test_comments_idempotency_and_page_limit(client):
+    token = _auth(client)
+    headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "same-key"}
+    first = client.post("/api/posts", json={"title": "한 번", "body": "본문"}, headers=headers)
+    second = client.post("/api/posts", json={"title": "두 번", "body": "다른 본문"}, headers=headers)
+    assert first.status_code == 201
+    assert second.json()["data"]["id"] == first.json()["data"]["id"]
+    assert second.json()["data"]["title"] == "한 번"
+
+    post_id = first.json()["data"]["id"]
+    comment = client.post(
+        f"/api/posts/{post_id}/comments",
+        json={"body": "첫 댓글"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert comment.status_code == 201
+    assert comment.json()["data"]["body"] == "첫 댓글"
+
+    listed = client.get(f"/api/posts/{post_id}/comments")
+    assert listed.json()["meta"]["total"] == 1
+    detail = client.get(f"/api/posts/{post_id}")
+    assert detail.json()["data"]["commentCount"] == 1
+
+    capped = client.get("/api/posts", params={"limit": 80})
+    assert capped.json()["meta"]["limit"] == 50

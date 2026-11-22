@@ -1,149 +1,91 @@
-# study11. 고급 기술 구현 6 — 레이어별 폴더 구조(models/repositories/schemas/services/routers)
+# study11. DB 확장
 
-## 왜 다시 구조를 손보는가
+## ① 목표
 
-study3에서 `routers/`, `schemas.py`, `models.py`, `store.py`로 계층을 나눴습니다. 그런데 그 구조를 study10까지 그대로 끌고 오면서 문제가 하나 있었습니다.
+같은 SQLAlchemy 모델을 SQLite, MariaDB, PostgreSQL에 연결하는 차이와, MongoDB가 그 엔진에 들어가지 않는 이유를 구분한다.
 
-```
-app/
-├── routers/
-│   ├── posts.py
-│   └── auth.py
-├── schemas.py   # PostCreate, PostResponse, PaginatedPosts, UserCreate, UserResponse, Token 전부
-├── models.py    # Post, User 전부
-└── store.py     # posts용 함수 + users용 함수 전부
-```
+## ② 📖 이론
 
-`routers/`만 폴더로 분리되어 있고, `schemas.py`/`models.py`/`store.py`는 여러 기능이 뒤섞인 파일 하나로 남아 있었습니다. 지금은 게시글(posts)과 회원(users) 두 기능뿐이라 봐줄 만했지만, 여기에 댓글·카테고리 같은 기능이 늘어나면 파일 하나가 계속 불어나는 구조입니다.
+### 왜 쓰는지
 
-이번 문서에서는 아래처럼 **레이어(계층)마다 폴더를 만들고, 그 폴더 안에 기능별 파일을 두는 구조**로 정리합니다.
+개발은 파일 하나인 SQLite로 충분하다. 여러 프로세스가 동시에 쓰면 서버형 DB가 필요하다. 모델을 다시 짜지 않고 접속 문자열과 드라이버만 바꾸는 것이 ORM을 쓰는 이유다.
 
-```
-app/
-├── __init__.py
-├── main.py
-├── config.py          # pydantic-settings 기반 환경설정
-├── database.py        # SQLAlchemy Engine/Session
-├── security.py         # 비밀번호 해시, JWT 인코딩 (범용 유틸)
-├── exceptions.py       # 전역 예외 핸들러
-├── dependencies.py     # Pagination 등 여러 라우터가 공유하는 의존성
-├── models/              # 모델단
-│   ├── post.py            # Post (SQLAlchemy)
-│   └── user.py            # User (SQLAlchemy)
-├── schemas/             # 스키마단
-│   ├── post.py            # PostCreate, PostResponse, PaginatedPosts (Pydantic)
-│   └── user.py            # UserCreate, UserResponse, Token (Pydantic)
-├── repositories/        # 레포지토리단
-│   ├── post.py            # DB 접근만 (SQL 쿼리)
-│   └── user.py
-├── services/            # 서비스단
-│   ├── post.py            # 비즈니스 로직 (404 변환, 소유권 검사, 백그라운드 작업)
-│   └── user.py            # 회원가입 규칙, 로그인 인증, get_current_user
-└── routers/             # 라우터단
-    ├── post.py            # HTTP 계층, prefix="/posts"
-    ├── auth.py             # HTTP 계층, prefix="/auth"
-    └── async_demo.py       # study6 개념 확인용 (실제 기능 아님)
+### 핵심 개념
+
+- **SQLite**: `sqlite:///./demo.db`. 서버 프로세스가 없다. `check_same_thread`가 필요하다.
+- **MariaDB / MySQL**: `mysql+pymysql://user:password@localhost:3306/demo`. 드라이버 패키지는 `pymysql`.
+- **PostgreSQL**: `postgresql+psycopg://user:password@localhost:5432/demo`. 드라이버는 `psycopg`(3).
+- **MongoDB**: 문서 데이터베이스라 `create_engine`에 넣지 않는다. 예시는 `project/examples/mongodb_client.py`이고, 이 게시판의 본 경로는 아니다.
+- **SQLModel**: SQLAlchemy 위에 스키마와 테이블을 한 클래스로 합친 도구. 예시는 `project/examples/sqlmodel_post.py`. 본 앱은 요청 스키마와 테이블을 나누려고 SQLAlchemy만 사용한다.
+
+`pool_pre_ping=True`는 서버형 DB가 끊어 둔 접속을 다음 요청 전에 확인한다.
+
+### 비유
+
+SQLite는 책상 서랍, MariaDB와 PostgreSQL은 같은 서류 양식을 받는 두 창고다. 열쇠 문자열만 다르다. MongoDB는 서류철이 아니라 봉투 더미라, 서랍 열쇠로는 열리지 않는다.
+
+## ③ 🛠️ 실기
+
+애플리케이션이 URL을 해석하는 함수는 study6의 `build_engine` 그대로다. 바꾸면 안 되는 것은 라우터와 서비스다.
+
+PostgreSQL을 연습용으로 띄우는 작성은 `project/docker-compose.yml`의 `postgres` 서비스다. 기본 `docker compose up`에는 포함되지 않고, 프로필을 지정할 때만 뜬다.
+
+```powershell
+cd project
+docker compose --profile postgres up -d postgres
 ```
 
-`models`, `schemas`, `repositories`, `services`, `routers` 각각이 폴더가 되고, 그 안에 `post.py`, `user.py`처럼 기능별 파일을 둡니다. 기능이 늘어나면(예: 댓글) 다섯 폴더 각각에 `comment.py` 파일 하나씩만 추가하면 됩니다.
+뜬 뒤에 앱의 환경 변수만 바꾼다.
 
-## 레이어별 역할
-
-**`models/post.py`** — SQLAlchemy ORM 모델. 테이블 구조만 정의합니다.
-
-**`schemas/post.py`** — Pydantic 스키마. 요청/응답 데이터 형태만 정의합니다.
-
-**`repositories/post.py`** — DB 접근 전용. HTTP나 "무엇이 잘못된 요청인지"는 전혀 모르고, SQLAlchemy 쿼리만 있습니다.
-
-```python
-def get_by_id(db: Session, post_id: int) -> Optional[Post]:
-    return db.get(Post, post_id)
-
-
-def create(db: Session, post: PostCreate, author_id: int) -> Post:
-    new_post = Post(**post.model_dump(), author_id=author_id)
-    db.add(new_post)
-    db.commit()
-    db.refresh(new_post)
-    return new_post
+```env
+DATABASE_URL=postgresql+psycopg://demo:demo@localhost:5432/demo
 ```
 
-**`services/post.py`** — 비즈니스 규칙. "존재하지 않으면 404", "본인 글이 아니면 403", "글을 쓰면 알림 작업을 예약한다" 같은 판단을 여기서 내리고, repository를 호출해 실제 DB 작업을 위임합니다.
+패키지가 없으면 앱 폴더에서 `pip install "psycopg[binary]"`. 그 다음 uvicorn을 재시작한다. `create_all`이 빈 데이터베이스에 테이블을 만든다. 이미 데이터가 있는 SQLite와는 별개의 데이터베이스다.
 
-```python
-def get_post_or_404(db: Session, post_id: int) -> Post:
-    post = repository.get_by_id(db, post_id)
-    if post is None:
-        raise HTTPException(status_code=404, detail=f"post {post_id}를 찾을 수 없습니다.")
-    return post
+MariaDB도 같은 자리다. 서버를 준비한 뒤 URL만 `mysql+pymysql://...`로 바꾼다. 포트 기본값은 3306이다.
 
+MongoDB 예시는 실행 경로가 아니다. `examples/mongodb_client.py`는 `AsyncIOMotorClient`로 `posts` 컬렉션에 문서를 넣는 함수만 보여 준다. 컬럼 선언이 없고, 조인 대신 문서를 통째로 넣는다. 이 게시판의 `author_id` 외래 키 검사는 그 모델에 없다.
 
-def update_post(db: Session, post_id: int, data: PostCreate, current_user: User) -> Post:
-    existing = get_post_or_404(db, post_id)
-    _check_owner(existing, current_user)      # 소유권 검사(비즈니스 규칙)
-    return repository.update(db, existing, data)
+SQLModel 예시를 실행하려면 별도 설치가 필요하다.
+
+```powershell
+pip install sqlmodel
+python examples/sqlmodel_post.py
 ```
 
-**`routers/post.py`** — HTTP 계층. 요청을 파싱해서 service를 호출하고, service가 돌려준 값을 그대로 응답합니다. 이제 라우터 함수 안에는 SQL도, 소유권 검사도 없습니다.
+출력은 `SQLModel 메모`다. 이 실행은 `demo.db`를 만들지 않고 메모리 엔진만 쓴다.
 
-```python
-@router.put("/{post_id}", response_model=PostResponse)
-def update_post(
-    post_id: int,
-    post: PostCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return service.update_post(db, post_id, post, current_user)
-```
+이 작업에서는 떠 있는 PostgreSQL에 접속해 테이블을 만드는 단계까지 확인하지 않았다. 컴포즈 파일과 URL, 드라이버 이름만 준비했다. 그래서 아래 PostgreSQL 항목은 비워 둔다.
 
-이렇게 나누면:
+## ④ 🔗 연동 포인트
 
-- **테스트하기 쉬워진다**: `service.update_post()`는 FastAPI/HTTP와 무관한 순수 함수라서, 나중에 CLI 스크립트나 배치 작업에서도 재사용할 수 있습니다.
-- **책임이 분명해진다**: "쿼리가 잘못됐나?"는 `repositories/`를, "왜 403이 나지?"는 `services/`를, "이 경로가 어떤 응답 모델을 쓰는지"는 `routers/`를 보면 됩니다.
-- **기능이 늘어나도 규칙이 같다**: 댓글 기능을 추가하면 `models/comment.py`, `schemas/comment.py`, `repositories/comment.py`, `services/comment.py`, `routers/comment.py`를 각 폴더에 하나씩 추가하면 됩니다.
+study6의 저장소 코드는 엔진만 바꾸면 같은 CRUD를 수행한다. study16의 컨테이너는 기본으로 SQLite 파일을 볼륨에 둔다. PostgreSQL 프로필을 쓸 때는 `DATABASE_URL`을 compose 네트워크의 호스트 이름 `postgres`로 바꾼다. `localhost`는 컨테이너 안의 자기 자신을 가리키므로, 앱 컨테이너에서는 `postgres`라는 서비스 이름을 쓴다.
 
-## import 예시로 보는 흐름
+## ⑤ 오류 노트
 
-```python
-# repositories/post.py
-from app.models.post import Post
-from app.schemas.post import PostCreate
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| `No module named 'psycopg'` | 드라이버 미설치 | `pip install "psycopg[binary]"` |
+| `Can't connect` MySQL | 서버 중지 또는 포트 | 3306이 열려 있는지 확인 |
+| PostgreSQL 비밀번호 실패 | compose의 `demo/demo`와 URL이 다름 | URL의 사용자와 비밀번호를 compose와 맞춘다 |
+| 컨테이너에서 localhost 접속 실패 | localhost가 앱 컨테이너 자신 | 호스트 이름을 `postgres`로 |
+| Mongo 예시를 SQLAlchemy URL에 넣음 | 엔진이 그 스킴을 모름 | Mongo는 별도 드라이버 예제로만 둔다 |
 
-# services/post.py
-from app.models.post import Post
-from app.models.user import User
-from app.repositories import post as repository
-from app.schemas.post import PaginatedPosts, PostCreate
+## ⑥ 직접 해보기
 
-# routers/post.py
-from app.schemas.post import PaginatedPosts, PostCreate, PostResponse
-from app.services import post as service
-from app.services.user import get_current_user
-```
+1. 지금 `.env`의 `DATABASE_URL`이 sqlite인지 확인하고, 앱이 그 파일로 목록을 읽는지 본다.
+2. `examples/sqlmodel_post.py`를 설치 후 실행하거나, 설치하지 않는다면 클래스가 테이블과 모델을 겸한다는 점만 주석으로 확인한다.
+3. compose의 postgres 프로필을 읽고, 앱 컨테이너에서 호스트 이름이 왜 `localhost`가 아닌지 한 문장으로 적는다.
 
-`routers → services → repositories → models` 순서로만 의존하고, 반대 방향(`models`가 `services`를 알거나 하는 것)은 없습니다. `services/post.py`가 `models/user.py`, `services/user.py`를 가져다 쓰는 것처럼, "게시글(post)" 기능이 "회원(user)" 기능의 결과물을 참조하는 것은 자연스럽지만, 그 반대(`services/user.py`가 `post`를 참조하는 것)는 없습니다.
+## ⑦ ☐ 체크리스트
 
-## 실습11: 리팩터링 후 회귀 확인
+- [ ] SQLite, MariaDB, PostgreSQL의 URL 스킴을 구분한다.
+- [ ] `build_engine`이 SQLite에만 `check_same_thread`를 넣는다.
+- [ ] MongoDB 예시가 본 앱의 엔진을 쓰지 않는다.
+- [ ] SQLModel 예시가 앱 시작 경로에 포함되지 않는다.
+- [ ] PostgreSQL 연결 (`postgresql+psycopg://...`, PostgreSQL 페이지)
 
-폴더 구조만 바꿨을 뿐 동작은 study10과 완전히 동일해야 합니다. `tests/conftest.py`의 import 경로(`app.core.database` → `app.database`)만 고치고, 나머지 테스트 코드는 손대지 않았습니다.
+## ⑧ 다음 단계
 
-```bash
-$ pytest -v
-...
-======================== 9 passed, 2 warnings in 3.32s ========================
-```
-
-study9에서 만든 9개 테스트가 구조 변경 후에도 그대로 통과했습니다.
-
-```bash
-$ uvicorn app.main:app --reload --port 8001
-$ curl http://127.0.0.1:8001/posts
-{"items":[...],"total":2,"skip":0,"limit":10}
-
-$ curl -X POST http://127.0.0.1:8001/auth/register -d '{"username":"alice","password":"secret123"}' -H "Content-Type: application/json"
-{"id":1,"username":"alice"}
-# 로그인 → 토큰으로 글쓰기 → 미인증 글쓰기 차단(401) → /async-demo/* 및 /docs 정상 응답까지 재확인 완료
-```
-
-다음 단계(`studyFinal`)에서는 `project/`도 이 구조로 다시 정리합니다.
+DB를 유지한 채로, study12에서 이 JSON을 React 화면의 state와 입력 폼에 연결한다.

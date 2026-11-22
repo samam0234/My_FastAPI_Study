@@ -1,109 +1,112 @@
-# studyFinal. 미니 게시판 API 종합 프로젝트
+# studyFinal. 심화까지 포함한 게시판
 
-지금까지 `demo/`에서 study0~study11을 거치며 단계적으로 쌓아온 내용을 모두 모아, `project/`에 **완결된 미니 게시판 API**를 처음부터 다시 설계해서 만들었습니다. 공통 스펙이었던 `/posts` CRUD + `/auth/login`을 갖춘 완성형 서비스입니다.
+## ① 목표
 
-## 1. `demo/`와 `project/`의 차이
+study11부터 study18, 그리고 midpoint의 게시판을 `project/` 하나의 FastAPI 서비스로 맞춘다.
 
-- `demo/`: study1의 파일 하나짜리 앱에서 시작해, study11까지 매 단계 "이번에 뭘 배웠고 무엇이 바뀌었는지"를 보여주기 위해 점진적으로 리팩터링해온 **학습용 기록**입니다. (`routers/async_demo.py`, `/debug/boom` 같은 개념 확인용 라우트도 남아있습니다.)
-- `project/`: 그 학습 결과를 반영해 **처음부터 완성된 구조**로 다시 만든 결과물입니다. 레이어별 폴더(`models/`, `schemas/`, `repositories/`, `services/`, `routers/`) 분리, 설정 분리(`.env`), DB 연동, JWT 인증, CORS, 전역 예외 처리, 테스트가 첫 커밋부터 모두 갖춰져 있고, 순수 학습/실험용 라우트는 제외했습니다.
+## ② 📖 이론
 
-## 2. 적용한 기능과 대응 study
+### 왜 따로 모으나
 
-| 기능 | 설명 | 대응 study |
-|---|---|---|
-| `app/` 패키지 구조 | 레이어별 폴더(`models/`, `schemas/`, `repositories/`, `services/`, `routers/`), 폴더마다 기능별 파일(`post.py`, `user.py`) | study1, study3, study11 |
-| `/posts` CRUD | Path/Query 파라미터 + Pydantic 스키마(`PostCreate`/`PostResponse`) | study2 |
-| 의존성 주입 | `Pagination`(페이지네이션), `get_current_user`(인증) | study3, study7 |
-| SQLAlchemy 연동 | `Post`, `User` 모델, `.env`의 `DATABASE_URL`로 SQLite/MySQL 전환 가능 | study4 |
-| 회원 도메인 | `passlib`(pbkdf2_sha256) 비밀번호 해시, `/auth/register` | study5 |
-| `BackgroundTasks` | 글 작성 시 알림 발송을 흉내내는 백그라운드 작업 | study6 |
-| JWT 인증 | `/auth/login`(`OAuth2PasswordBearer` + `python-jose`), 작성자 소유권 검사(403) | study7 |
-| CORS / 예외 핸들러 | `CORSMiddleware`, `{"detail": ...}` 공통 에러 포맷 | study8 |
-| 테스트 | `pytest` + `TestClient`, 인메모리 DB로 격리된 9개 테스트 | study9 |
-| 설정 관리 | `pydantic-settings`로 `SECRET_KEY`/`DATABASE_URL`/`CORS_ORIGINS` 등을 `.env`로 분리, `items/total/skip/limit` 페이지네이션 응답 | study10 |
-| 레이어별 폴더링 | `models/repositories/schemas/services/routers` 분리, DB 접근(`repositories`)과 비즈니스 로직(`services`) 분리 | study11 |
+midpoint의 `demo/`는 기초 기능만으로 동작해야 한다. 심화 코드를 거기에 넣으면 업로드나 웹소켓이 없을 때도 파일이 필요하다. `project/`는 같은 CRUD 위에 DB 교체 방법, 외부 호출, AI, 컨테이너를 더한 완성본이다.
 
-`project/app/` 내부 각 파일의 코드는 `demo/`의 study11 시점 코드와 거의 동일합니다 — 다른 점은 학습용으로만 존재했던 `routers/async_demo.py`, `/debug/boom` 라우트를 제외하고, `/`를 간단한 헬스 체크로 정리했다는 것입니다. 자세한 코드 설명은 각 study 문서를, 실행 방법은 [project/README.md](../project/README.md)를 참고하세요.
+### 핵심 개념
 
-## 3. 실행 및 동작 확인
+완성본이 지키는 계약은 바뀌지 않는다. `/api`, `data`+`meta`, `error.code`, camelCase, Bearer 토큰. 더한 것은 경로와 실행 방법이다.
 
-```bash
-cd project
-python -m venv .venv
-.venv/Scripts/Activate.ps1
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --reload
+### 비유
+
+demo는 주방만 있는 가게고 project는 벨과 서류 질문 창구와 포장 상자까지 갖춘 가게다. 주문 양식은 같다.
+
+## ③ 🛠️ 실기
+
+### 기능 목록
+
+midpoint의 기능에 더해 다음이 있다.
+
+- 업로드, 메일 로그, 결제 초안, 구글 인가 URL
+- 문서 인덱싱, 발췌 답변, SSE 스트림
+- `/ws/posts` 새 글 id 알림
+- 목록 캐시(`CACHE_TTL_MS`)
+- Dockerfile, compose, GitHub Actions, SQLite 백업 스크립트
+- SQLModel·MongoDB·PostgreSQL URL 예시
+
+### 연동 구성
+
+```text
+React :3000
+   │  /api  JSON, Bearer
+   ▼
+project FastAPI :8000
+   ├─ SQLAlchemy ── SQLite 파일 (기본)
+   │                 또는 DATABASE_URL의 MySQL / PostgreSQL
+   ├─ uploads/      파일
+   ├─ 메모리        메일 outbox, AI 청크, 웹소켓 허브, 목록 캐시
+   └─ 선택         OpenAI (키), Ollama 이름, Google 인가 URL
 ```
 
-### 전체 흐름 스모크 테스트
+MongoDB 예시는 이 상자 밖에 있다. 앱이 그 드라이버를 import하지 않는다.
 
-```bash
-$ curl http://127.0.0.1:8000/
-{"status":"ok","service":"Mini Board API"}
+### 구현 순서
 
-$ curl http://127.0.0.1:8000/posts
-{"items":[{"title":"첫 번째 글","content":"Mini Board API에 오신 것을 환영합니다.","published":true,"id":1,"author_id":null},
-          {"title":"비공개 초안","content":"아직 다듬는 중입니다.","published":false,"id":2,"author_id":null}],
- "total":2,"skip":0,"limit":10}
+1. midpoint까지 동작하는 `demo`를 기준으로 삼는다.
+2. 같은 모델과 라우터를 `project`에 두고 포트만 8000으로 연다.
+3. study11: `.env.example`에 MariaDB·PostgreSQL URL을 적고 `build_engine`이 SQLite만 특별 취급하는지 확인한다. 실서버 접속은 체크하지 않는다.
+4. study12: `project/frontend`가 `accessToken`, `data`, `meta`를 읽게 한다.
+5. study13: `routers/integrations.py`를 `/api`에 포함한다.
+6. study14: `/docs`와 `/api-docs`, 오류 표, 페이지 메타를 테스트로 고정한다.
+7. study15: 캐시 TTL 0 기본값, 백그라운드 알림, `demo`의 async 비교 경로를 유지한다.
+8. study16: Dockerfile의 `0.0.0.0`, Actions의 두 폴더 테스트, 백업 스크립트.
+9. study17: 생성 뒤 `post.created`와 id만 방송한다. demo에는 이 모듈이 없다.
+10. study18: mock 문서 답변, 스트림, `examples/mcp/server.py`. DocuForge의 404/503과 SocialForge의 제공자 선택을 이 FastAPI 경로에만 대응시킨다.
+11. `project`에서 `pytest -q`를 실행한다.
 
-$ curl -X POST http://127.0.0.1:8000/auth/register \
-    -H "Content-Type: application/json" -d '{"username":"alice","password":"secret123"}'
-{"id":1,"username":"alice"}
+### 배포 체크리스트
 
-$ curl -X POST http://127.0.0.1:8000/auth/login \
-    -H "Content-Type: application/x-www-form-urlencoded" -d "username=alice&password=secret123"
-{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", "token_type":"bearer"}
+- [ ] `pytest -q`가 project에서 통과한다.
+- [ ] `/health`와 `/api/posts`가 기대한 모양이다.
+- [ ] 토큰 없이 글 작성과 업로드는 401이다.
+- [ ] 남의 글 수정은 403, 없는 글은 404다.
+- [ ] 검증 실패는 400이고 `fields`가 있다.
+- [ ] `SECRET_KEY`와 API 키가 저장소에 없다.
+- [ ] CORS 출처가 프론트 주소와 같다.
+- [ ] 컨테이너를 쓰면 바인드가 `0.0.0.0`이다.
+- [ ] SQLite를 쓰면 백업 복사본을 만들 수 있다.
+- [ ] AI 키가 없어도 `/api/ai/ask`가 mock으로 답한다.
+- [ ] PostgreSQL 실서버 접속은 아직 완료로 표시하지 않는다.
 
-$ curl -X POST http://127.0.0.1:8000/posts \
-    -H "Content-Type: application/json" -H "Authorization: Bearer <위에서 받은 토큰>" \
-    -d '{"title":"studyFinal post","content":"final project smoke test","published":true}'
-{"title":"studyFinal post","content":"final project smoke test","published":true,"id":3,"author_id":1}
+### 최종 회고
 
-$ curl -o - -w "\n%{http_code}\n" -X POST http://127.0.0.1:8000/posts \
-    -H "Content-Type: application/json" -d '{"title":"x","content":"y"}'
-{"detail":"Not authenticated"}
-401
-```
+기초만으로도 회원과 게시글이 돌아갔고, 심화는 그 계약 위에 경로를 더하는 방식이었다. 목록을 파이썬에서 자르지 않고 SQL로 옮긴 점, 오류를 `detail`이 아닌 `error`로 모은 점, 비밀번호를 응답 스키마에서 뺀 점이 화면을 붙일 때 가장 많이 줄인 분기였다. 메모리에 둔 캐시, 폐기 토큰, AI 인덱스, 웹소켓 목록은 프로세스가 하나일 때의 학습용 한계다. 프로세스를 늘리기 전에 그 넷을 공유 저장소로 바꾸는 일이 다음 작업이다.
 
-헬스 체크, 시드 데이터 조회, 회원가입, 로그인, 인증된 글쓰기, 인증 없는 글쓰기 차단까지 처음부터 끝까지 정상 동작하는 것을 확인했습니다.
+## ④ 🔗 연동 포인트
 
-### 테스트 스위트
+`demo`와 `project`의 게시글 JSON은 같다. 화면은 포트만 다르다. Actions는 둘 다 테스트해서 기초 앱이 심화 수정 때문에 깨지지 않았는지 본다. PostgreSQL로 옮길 때는 라우터를 건드리지 않고 `DATABASE_URL`과 드라이버만 바꾼다. AI와 업로드는 글 테이블에 자동으로 쓰이지 않으므로, 화면이 순서를 정해야 한다.
 
-```bash
-$ pytest -v
-collected 9 items
-tests/test_auth.py::test_register_duplicate_username PASSED
-tests/test_auth.py::test_login_wrong_password PASSED
-tests/test_auth.py::test_login_success PASSED
-tests/test_posts.py::test_list_posts_empty PASSED
-tests/test_posts.py::test_get_post_404 PASSED
-tests/test_posts.py::test_create_post_requires_auth PASSED
-tests/test_posts.py::test_create_and_get_post PASSED
-tests/test_posts.py::test_update_post_forbidden_for_non_owner PASSED
-tests/test_posts.py::test_owner_can_update_and_delete PASSED
-======================== 9 passed, 2 warnings in 3.35s ========================
-```
+## ⑤ 오류 노트
 
-## 4. Notion 학습 목표 최종 점검
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| project 테스트가 demo 경로를 찾지 못함 | pytest를 저장소 루트에서 실행 | `cd project` 후 `pytest -q` |
+| 웹소켓이 demo에 없음 | 의도된 분리 | 알림은 project에서 확인 |
+| AI 문서가 재시작 후 사라짐 | 인덱스가 메모리 | 다시 `POST /api/ai/documents` |
+| 배포 환경이 개발 SQLite를 봄 | 환경 변수 누락 | `DATABASE_URL`을 프로세스에 넣는다 |
 
-| 학습 목표 | 완료 여부 |
-|---|---|
-| 경로, Path/Query, Pydantic 스키마 | ✅ study2 |
-| 의존성 주입 | ✅ study3, study7 |
-| SQLAlchemy / SQLModel + MySQL | ✅ study4 (SQLAlchemy, `.env`로 MySQL 전환 가능) |
-| 비동기 라우트 | ✅ study6 |
-| JWT 인증 | ✅ study7 |
-| CORS, 예외 핸들러 | ✅ study8 |
-| 테스트코드로 API 테스트 | ✅ study9 |
-| 공통 스펙(`/posts` CRUD + `/auth/login`) | ✅ `project/` |
+## ⑥ 직접 해보기
 
-## 5. 다음 단계로 이어갈 수 있는 것들
+1. project에서 가입, 글, 댓글, 업로드, 문서 질문을 순서대로 호출한다.
+2. `pytest -q` 결과를 배포 체크리스트 첫 칸에 적는다.
+3. 회고의 "메모리에 둔 네 가지"가 코드에서 어느 변수인지 찾아 이름을 적는다.
 
-- 댓글(Comment) 모델을 추가해 게시글-댓글 1:N 관계와 nested response 다뤄보기
-- Alembic으로 실제 마이그레이션 이력 관리 도입
-- `DATABASE_URL`을 실제 MySQL 인스턴스로 바꿔 운영 환경에 가깝게 배포해보기
-- Refresh Token, 로그아웃 시 토큰 무효화 같은 인증 흐름 보강
-- React/Vue로 만든 실제 프론트엔드를 붙여 이 API를 소비하는 풀스택 앱 완성
+## ⑦ ☐ 체크리스트
 
-여기까지 [Notion: FastAPI 학습 목표](https://app.notion.com/p/FastAPI-3d6d7dec5e2e810fb6f5fa9e53bcb9a2)에서 시작한 커리큘럼을 모두 마쳤습니다.
+- [ ] demo는 기초 게시판, project는 심화 포함이라는 구분이 맞다.
+- [ ] 공통 계약(`/api`, `data`+`meta`, `error`, camelCase, Bearer)이 테스트로 고정되어 있다.
+- [ ] 외부 호출은 키가 없으면 네트워크를 타지 않는다.
+- [ ] Docker·Actions·백업 파일의 위치를 말할 수 있다.
+- [ ] PostgreSQL 실연결은 완료로 체크하지 않았다.
+- [ ] 최종 회고의 다음 작업(공유 저장소)을 이해했다.
+
+## ⑧ 다음 단계
+
+이 게시판의 다음 실제 작업은 메모리에 둔 캐시·폐기 토큰·문서 인덱스·웹소켓 목록을 프로세스 밖으로 옮기고, PostgreSQL에 연결해 본 뒤에만 study11의 남은 체크를 채우는 것이다.

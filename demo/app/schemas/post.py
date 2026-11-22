@@ -1,34 +1,62 @@
-# ─────────────────────────────────────────────────────────────
-# schemas/post.py : 게시글 요청/응답 데이터의 "모양"을 정의하는 Pydantic 스키마
-#   - ORM 모델(models)은 DB 테이블용, 스키마(schemas)는 API 입출력용으로 역할이 다르다.
-#   - Pydantic이 타입 검증·변환을 자동으로 해주고 /docs 문서도 자동 생성해 준다.
-# ─────────────────────────────────────────────────────────────
-from typing import Optional
+"""게시글 요청/응답 스키마. 목록은 data + meta 봉투를 쓴다."""
 
-# BaseModel: 모든 Pydantic 스키마의 부모 클래스 / ConfigDict: 스키마 동작 옵션 지정
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+from pydantic import Field, field_serializer
+
+from app.schemas.common import APIModel
 
 
-# 글 "생성/수정" 요청 본문(Request Body)의 형태
-class PostCreate(BaseModel):
-    title: str  # 필수 필드 (기본값 없음 → 없으면 422 에러)
-    content: str  # 필수 필드
-    published: bool = True  # 선택 필드 (안 보내면 True)
-
-
-# 글 "응답"의 형태: PostCreate의 필드를 모두 물려받고 id, author_id를 추가한다.
-class PostResponse(PostCreate):
-    # from_attributes=True: dict가 아니라 ORM 객체(post.title 처럼 속성 접근)에서도
-    # 값을 읽어 스키마로 변환할 수 있게 한다. (SQLAlchemy 객체를 그대로 반환하려면 필요)
-    model_config = ConfigDict(from_attributes=True)
-
+class Author(APIModel):
     id: int
-    author_id: Optional[int] = None  # 작성자가 없을 수도 있으므로 None 허용
+    nickname: str
 
 
-# 목록 조회 응답: 페이지네이션 정보를 함께 내려준다.
-class PaginatedPosts(BaseModel):
-    items: list[PostResponse]  # 현재 페이지의 글 목록
-    total: int  # 조건에 맞는 전체 글 개수
-    skip: int  # 건너뛴 개수 (요청 값 그대로)
-    limit: int  # 한 페이지 크기 (요청 값 그대로)
+class PostCreate(APIModel):
+    title: str = Field(min_length=1, max_length=200, examples=["첫 글"])
+    body: str = Field(min_length=1, examples=["안녕하세요"])
+    tags: list[str] = Field(default_factory=list, examples=[["intro"]])
+
+
+class PostPatch(APIModel):
+    """보낸 필드만 수정한다. 빼먹은 필드는 그대로 둔다."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    body: str | None = Field(default=None, min_length=1)
+    tags: list[str] | None = None
+
+
+class PostResponse(APIModel):
+    id: int
+    title: str
+    body: str
+    tags: list[str]
+    author: Author | None = None
+    comment_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer("created_at", "updated_at")
+    def _iso_utc(self, value: datetime) -> str:
+        from datetime import timezone
+
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class PostEnvelope(APIModel):
+    data: PostResponse
+
+
+class PageMeta(APIModel):
+    page: int
+    limit: int
+    total: int
+    total_pages: int
+    q: str = ""
+
+
+class PostList(APIModel):
+    data: list[PostResponse]
+    meta: PageMeta

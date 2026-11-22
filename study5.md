@@ -1,125 +1,96 @@
-# study5. 실습5 — User 모델과 회원가입 (`/auth/register`)
+# study5. 폼, 입력, 검증
 
-Notion 학습 목표 대응: (회원 도메인 준비 — JWT 인증의 기반)
+## ① 목표
 
-공통 스펙 `/posts` CRUD + `/auth/login` 중 아직 손대지 않은 `/auth` 쪽을 시작합니다. 로그인(JWT 발급)은 인증 개념을 따로 다루는 study7에서 구현하고, 이번 문서에서는 그 전 단계인 **회원 모델 설계 + 비밀번호 해시 + 회원가입**을 만듭니다.
+사용자 입력을 검증하고, 실패 이유를 필드별로 보여 주며, 같은 제출이 두 번 저장되지 않게 한다.
 
-## 1. User 모델
+## ② 📖 이론
 
-`app/models.py`에 추가:
+### 왜 쓰는지
 
-```python
-class User(Base):
-    __tablename__ = "users"
+제목이 비었는데도 저장되면 목록이 쓰레기로 찬다. 화면이 "실패"만 말하면 사용자는 어느 칸을 고칠지 모른다. 저장 버튼이 느릴 때 두 번 누르면 같은 글이 두 개 생긴다.
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    username: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
-```
+### 핵심 개념
 
-- `unique=True`: DB 레벨에서 username 중복을 막습니다. 다만 이번 실습에서는 애플리케이션 레벨(`store.create_user`)에서도 먼저 확인해, 사용자에게 500 에러 대신 의미 있는 400 에러를 보여주도록 했습니다.
-- 비밀번호는 **절대 평문으로 저장하지 않습니다.** 컬럼 이름부터 `hashed_password`로 지어 "여기 들어가는 값은 해시된 값"이라는 의도를 코드로 드러냈습니다.
+- 회원가입: `email`, `password`(8자 이상), `nickname`.
+- 로그인: JSON `{ "email", "password" }`. Swagger의 Authorize는 폼의 `username`에 이메일을 넣어도 된다.
+- 검증 실패는 **400** `VALIDATION_ERROR`와 `fields`. FastAPI가 원래 주는 422는 핸들러가 400으로 바꾼 상태다. 둘을 혼동하지 않기 위해, 고친 뒤의 계약은 400이라고 기억한다.
+- 로그인 실패는 401 `INVALID_CREDENTIALS`. 이메일과 비밀번호 중 어느 쪽이 틀렸는지는 말하지 않는다.
+- 중복 이메일은 409 `EMAIL_TAKEN`.
+- `Idempotency-Key` 헤더가 같으면 첫 생성 결과를 다시 돌려주고 두 번째 줄은 만들지 않는다.
 
-## 2. 비밀번호 해시: `passlib`
+### 비유
 
-```bash
-pip install passlib
-```
+양식의 빨간 칸이 `fields`다. 창구에서 "서류가 잘못됐다"만 말하면 전체를 다시 쓰게 된다. 접수 번호 스티커가 `Idempotency-Key`다. 같은 스티커로 다시 내면 새 접수증을 뽑지 않고 아까 것을 보여 준다.
 
-`app/security.py`:
+## ③ 🛠️ 실기
 
-```python
-from passlib.context import CryptContext
-
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-
-
-def hash_password(plain_password: str) -> str:
-    return pwd_context.hash(plain_password)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-```
-
-- `CryptContext`는 여러 해시 알고리즘을 추상화해줍니다. 알고리즘을 `bcrypt`에서 `argon2`로 바꾸는 식의 마이그레이션도 스킴 목록만 바꾸면 됩니다.
-- 이번 실습에서는 `pbkdf2_sha256`을 사용했습니다. `bcrypt`가 더 널리 쓰이지만 OS별로 컴파일된 확장이 필요해 환경에 따라 설치가 까다로울 수 있는 반면, `pbkdf2_sha256`은 순수 파이썬(hashlib 표준 라이브러리 기반)으로 동작해 별도 컴파일 없이 어디서나 동일하게 동작합니다.
-- `verify_password`는 해시를 복호화하는 게 아니라, 입력값을 같은 방식으로 다시 해시해서 저장된 해시와 **비교**하는 함수입니다(단방향 해시의 특징).
-
-## 3. 회원가입 스키마 + 라우트
-
-`app/schemas.py`:
+회원 생성 스키마 `project/app/schemas/user.py`:
 
 ```python
-class UserCreate(BaseModel):
-    username: str
-    password: str
-
-
-class UserResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    username: str
+class UserCreate(APIModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    nickname: str = Field(min_length=1, max_length=50)
 ```
 
-- `UserCreate`(요청)에는 `password`가 있지만, `UserResponse`(응답)에는 **`password`도 `hashed_password`도 없습니다.** `response_model=UserResponse`를 지정해두면 라우트가 실수로 `User` ORM 객체를 통째로 반환하더라도 FastAPI가 `UserResponse` 스키마 기준으로 다시 걸러서 직렬화하므로, 해시값이 응답에 실려 나갈 위험이 없습니다.
+줄별 설명:
 
-`app/store.py`에 추가:
+1. 가입 본문의 클래스. `APIModel`이라 별칭 규칙을 물려받는다.
+2. 이메일 형식. `@`가 없거나 도메인이 없으면 요청이 서비스까지 가지 않는다.
+3. 비밀번호 길이. 8자 미만은 `fields.password`에 "비밀번호는 8자 이상이어야 합니다."
+4. 닉네임 길이. 빈 문자열은 거절된다.
+
+서비스는 형식을 통과한 뒤에 한 번 더 다듬는다. 이메일은 소문자로 저장하고, 닉네임의 앞뒤 공백을 지운 결과가 비면 400이다.
+
+화면 `frontend/src/App.jsx`의 가입 폼은 전송 중에 `pending`을 켜서 버튼을 막는다. 그게 연타에 대한 1차 방지다. 서버의 2차 방지는 글 작성 헤더다.
 
 ```python
-def create_user(db: Session, user: UserCreate) -> models.User:
-    if get_user_by_username(db, user.username) is not None:
-        raise HTTPException(status_code=400, detail="이미 존재하는 username입니다.")
-    new_user = models.User(username=user.username, hashed_password=hash_password(user.password))
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
+def create_post(..., idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+    created = service.create_post(db, post, current_user, background_tasks, idempotency_key)
 ```
 
-`app/routers/auth.py` (새 라우터):
+서비스는 키를 메모리 딕셔너리에 글 id와 함께 기억한다. 같은 키가 다시 오면 그 id의 글을 조회해 반환한다. 프로세스를 재시작하면 기억이 사라진다. 운영에서는 이 딕셔너리를 Redis 같은 저장소로 바꾸면 된다. 학습 앱은 프로세스 메모리로 동작을 보여 주는 데서 멈춘다.
 
-```python
-router = APIRouter(prefix="/auth", tags=["auth"])
+상태 코드에 따라 화면이 하는 일:
 
+| 코드 | 화면 |
+| --- | --- |
+| 200, 201 | 목록을 다시 읽고 입력칸을 비운다 |
+| 400 | `error.message`와 `fields`를 에러 박스에 보여 주고 입력값은 유지한다 |
+| 401 | 로그인 폼으로 되돌린다 |
+| 422 | 이 프로젝트의 계약에서는 나오지 않는다. 나온다면 핸들러가 빠진 것 |
 
-@router.post("/register", response_model=UserResponse, status_code=201)
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    return store.create_user(db, user)
-```
+`frontend/src/api.js`는 `data.error.message`와 `data.error.fields`를 한 문장으로 합쳐 `throw new Error` 한다. 컴포넌트는 그 문장을 `error` state에 넣는다.
 
-`app/main.py`에 `app.include_router(auth.router)` 한 줄을 추가해 등록했습니다. 이제 `/posts`(게시글)와 `/auth`(회원)가 각자 별도 라우터 모듈로 나뉘어 있습니다.
+## ④ 🔗 연동 포인트
 
-## 4. 실습5: 동작 확인
+검증을 통과한 `PostCreate`만 study6 저장소의 `INSERT`로 간다. 실패 응답의 `requestId`는 study4 미들웨어가 만든 값이라, 사용자가 에러 문장을 알려 주면 서버 로그에서 같은 시각의 요청을 찾을 수 있다. 프론트 포트 3000에서 백엔드로 이 JSON을 보내려면 study7의 CORS가 그 출처를 허용해야 한다.
 
-```bash
-uvicorn app.main:app --reload --port 8001
-```
+## ⑤ 오류 노트
 
-```bash
-$ curl -X POST http://127.0.0.1:8001/auth/register \
-    -H "Content-Type: application/json" -d '{"username":"alice","password":"secret123"}'
-{"id":1,"username":"alice"}
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| 짧은 비밀번호가 201 | `UserCreate`가 아니라 평범한 dict로 받음 | 본문 타입을 `UserCreate`로 선언 |
+| 422가 그대로 보임 | 검증 핸들러 미등록 | `RequestValidationError` 핸들러가 400을 주는지 확인 |
+| 같은 키로 글이 두 개 | 헤더 이름이 다름 | `Idempotency-Key` 철자와 대시를 확인 |
+| 이메일이 같은데 409가 아님 | 대소문자만 다름 | 저장 전에 `lower()` 했는지 확인 |
+| 버튼을 두 번 눌렀더니 가입이 두 번 | 이메일이 달라서 409가 아님 | 화면의 `pending`으로 버튼을 막는지 확인 |
 
-$ curl -o - -w "\n%{http_code}\n" -X POST http://127.0.0.1:8001/auth/register \
-    -H "Content-Type: application/json" -d '{"username":"alice","password":"anything"}'
-{"detail":"이미 존재하는 username입니다."}
-400
+## ⑥ 직접 해보기
 
-$ curl -X POST http://127.0.0.1:8001/auth/register \
-    -H "Content-Type: application/json" -d '{"username":"bob","password":"hunter2"}'
-{"id":2,"username":"bob"}
-```
+1. 비밀번호 7자로 가입해 400과 `fields.password`를 확인한다.
+2. 같은 이메일로 다시 가입해 409 `EMAIL_TAKEN`을 확인한다.
+3. 글 작성에 같은 `Idempotency-Key`를 두 번 보내고, 두 응답의 `id`가 같은지 본다.
 
-응답에 비밀번호가 전혀 노출되지 않는 것도 확인했고, DB에 실제로 어떤 값이 저장됐는지 직접 열어봤습니다.
+## ⑦ ☐ 체크리스트
 
-```bash
-$ sqlite3 demo.db "select id, username, hashed_password from users;"
-1|alice|$pbkdf2-sha256$29000$XEtJ6f3/X6vVWkuJUcq5lw$Vro5s74HB0WmV/aP.U5h2zEeF8fRS5EtsFlfvfHNndI
-2|bob|$pbkdf2-sha256$29000$iRGiFKIUYkwphVCKMaYUwg$cjgTk7OgWPuZop63ofvY5SyW1ex/Ee0ccfGcvSljQKI
-```
+- [ ] 이메일 형식, 비밀번호 길이, 빈 제목을 서버가 거절한다.
+- [ ] 실패 본문에 `fields`가 있고 화면이 그 문장을 보여 준다.
+- [ ] 성공은 200 또는 201, 검증 실패는 400이다.
+- [ ] 같은 `Idempotency-Key`는 글을 새로 만들지 않는다.
+- [ ] 제출 중에는 버튼이 비활성화된다.
 
-평문 `secret123`, `hunter2`가 아니라 매번 다른 salt가 섞인 해시값이 저장된 것을 확인했습니다.
+## ⑧ 다음 단계
 
-다음 문서(study6)부터는 "고급 기술 구현" 파트로 넘어가, 먼저 **비동기 라우트**(`async def`, 블로킹 I/O 문제, `BackgroundTasks`)를 다룹니다.
+입력이 깨끗해졌으면 study6에서 그 값을 SQLite에 저장하고 목록·상세·수정·삭제를 SQL로 끝낸다.

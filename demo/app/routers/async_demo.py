@@ -1,4 +1,4 @@
-"""study6 개념 확인용 라우트 모음 (async/blocking 비교 실습 전용)."""
+"""비동기 라우트가 이벤트 루프를 어떻게 쓰는지 비교하는 실습 경로."""
 
 import asyncio  # 비동기 프로그래밍용 표준 라이브러리 (asyncio.sleep 등)
 import time  # 동기(블로킹) 대기용 time.sleep 사용

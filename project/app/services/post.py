@@ -1,77 +1,132 @@
-"""비즈니스 로직 계층. repositories(DB)와 routers(HTTP) 사이에서 규칙을 담당한다."""
+"""게시글 규칙. 없으면 404, 남의 글이면 403. 이 순서를 바꾸지 않는다."""
 
-import time
-from typing import Optional
-
-# BackgroundTasks: 응답을 보낸 "뒤에" 실행할 작업을 등록하는 FastAPI 도구
-# HTTPException: 에러 상태코드와 메시지를 담아 던지면 FastAPI가 해당 에러 응답으로 바꿔준다
-# status: HTTP 상태코드 상수 모음 (403 대신 status.HTTP_403_FORBIDDEN 처럼 읽기 쉽게 사용)
-from fastapi import BackgroundTasks, HTTPException, status
+from fastapi import BackgroundTasks, status
 from sqlalchemy.orm import Session
 
+from app.cache import cache_clear, cache_get, cache_set
+from app.errors import AppError
 from app.models.post import Post
 from app.models.user import User
-# "import 모듈 as 별칭": repositories.post 모듈을 repository라는 이름으로 쓴다.
+from app.repositories import comment as comment_repository
 from app.repositories import post as repository
-from app.schemas.post import PaginatedPosts, PostCreate
+from app.repositories import user as user_repository
+from app.schemas.post import Author, PageMeta, PostCreate, PostList, PostPatch, PostResponse
+
+_idempotency: dict[str, int] = {}
+
+
+def reset_idempotency() -> None:
+    _idempotency.clear()
+    cache_clear()
+
+
+def _author_map(db: Session, posts: list[Post]) -> dict[int, User]:
+    return user_repository.get_many(db, {post.author_id for post in posts if post.author_id is not None})
+
+
+def present_many(db: Session, posts: list[Post]) -> list[PostResponse]:
+    authors = _author_map(db, posts)
+    counts = comment_repository.count_for_posts(db, [post.id for post in posts])
+    result: list[PostResponse] = []
+    for post in posts:
+        author = authors.get(post.author_id) if post.author_id is not None else None
+        result.append(
+            PostResponse(
+                id=post.id,
+                title=post.title,
+                body=post.body,
+                tags=repository.load_tags(post.tags),
+                author=Author(id=author.id, nickname=author.nickname) if author else None,
+                comment_count=counts.get(post.id, 0),
+                created_at=post.created_at,
+                updated_at=post.updated_at,
+            )
+        )
+    return result
+
+
+def present_one(db: Session, post: Post) -> PostResponse:
+    return present_many(db, [post])[0]
 
 
 def get_post_or_404(db: Session, post_id: int) -> Post:
     post = repository.get_by_id(db, post_id)
     if post is None:
-        # raise: 예외를 발생시켜 함수 실행을 즉시 중단 → 클라이언트에는 404 응답이 나간다.
-        raise HTTPException(status_code=404, detail=f"post {post_id}를 찾을 수 없습니다.")
+        raise AppError(status.HTTP_404_NOT_FOUND, "NOT_FOUND", "해당 게시글을 찾을 수 없습니다.")
     return post
 
 
-def list_posts_paginated(
-    db: Session, published: Optional[bool], skip: int, limit: int
-) -> PaginatedPosts:
-    result = repository.list_all(db)
-    # published가 None이면 "필터 없음"이므로 전체를 그대로 사용한다.
-    if published is not None:
-        # 리스트 컴프리헨션: 조건에 맞는 글만 골라 새 리스트를 만든다.
-        result = [p for p in result if p.published == published]
-    # 슬라이싱 [skip : skip+limit]: skip번째부터 limit개만 잘라낸다 (페이지 한 장 분량).
-    page = result[skip : skip + limit]
-    # total은 "잘라내기 전" 전체 개수 → 프론트엔드가 전체 페이지 수를 계산할 수 있다.
-    return PaginatedPosts(items=page, total=len(result), skip=skip, limit=limit)
+def _check_owner(post: Post, current_user: User) -> None:
+    if post.author_id != current_user.id:
+        raise AppError(status.HTTP_403_FORBIDDEN, "FORBIDDEN", "작성자만 수정하거나 삭제할 수 있습니다.")
 
 
 def _notify_new_post(title: str) -> None:
-    """새 글 알림 발송을 흉내내는 느린 작업(예: 이메일/웹훅 호출)."""
-    time.sleep(1)  # 1초 동안 멈춰 "오래 걸리는 작업"을 흉내낸다
+    """응답을 보낸 뒤에 도는 알림 자리. 실제 메일은 study13에서 이 함수를 바꾼다."""
     print(f"[background] notified about new post: {title}")
 
 
-def create_post(
-    db: Session, post: PostCreate, author: User, background_tasks: BackgroundTasks
-) -> Post:
-    created = repository.create(db, post, author_id=author.id)
-    # 응답을 클라이언트로 보낸 뒤에 실행된다 — 클라이언트는 알림 발송을 기다리지 않는다.
-    # add_task(실행할 함수, 그 함수에 넘길 인자...) 형태로 등록한다.
-    background_tasks.add_task(_notify_new_post, created.title)
-    return created
+async def _publish_post_created(post_id: int) -> None:
+    """실시간 연결이 있는 앱이면 글 id만 보낸다. demo에는 realtime 모듈이 없다."""
+    try:
+        from app.realtime import hub
+    except ModuleNotFoundError:
+        return
+    await hub.broadcast({"event": "post.created", "id": post_id})
 
 
-# 함수 이름 앞의 "_"(언더스코어): "이 모듈 내부에서만 쓰는 함수"라는 파이썬 관례 표시.
-def _check_owner(post: Post, current_user: User) -> None:
-    # 글의 작성자 id와 현재 로그인한 사용자 id가 다르면 → 403 Forbidden (권한 없음)
-    #   401(인증 실패: 누군지 모름)과 구분: 403은 "누군지는 알지만 권한이 없음"
-    if post.author_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="본인이 작성한 글만 수정/삭제할 수 있습니다.",
+def list_posts(db: Session, *, q: str, sort: str, page: int, limit: int) -> PostList:
+    if not repository.is_allowed_sort(sort):
+        raise AppError(
+            status.HTTP_400_BAD_REQUEST,
+            "BAD_REQUEST",
+            "sort는 createdAt, -createdAt, -commentCount 중 하나여야 합니다.",
         )
+    cache_key = f"posts:{q}:{sort}:{page}:{limit}"
+    cached = cache_get(cache_key)
+    if isinstance(cached, PostList):
+        return cached
+    offset = (page - 1) * limit
+    rows, total = repository.search(db, q=q, sort=sort, offset=offset, limit=limit)
+    total_pages = (total + limit - 1) // limit if total else 0
+    payload = PostList(
+        data=present_many(db, rows),
+        meta=PageMeta(page=page, limit=limit, total=total, total_pages=total_pages, q=q),
+    )
+    cache_set(cache_key, payload)
+    return payload
 
 
-def update_post(db: Session, post_id: int, data: PostCreate, current_user: User) -> Post:
-    existing = get_post_or_404(db, post_id)  # 1) 글이 있는지 확인 (없으면 404)
-    _check_owner(existing, current_user)  # 2) 내 글인지 확인 (아니면 403)
-    return repository.update(db, existing, data)  # 3) 통과하면 실제로 수정
+def create_post(
+    db: Session,
+    data: PostCreate,
+    author: User,
+    background_tasks: BackgroundTasks,
+    idempotency_key: str | None = None,
+) -> PostResponse:
+    if idempotency_key and idempotency_key in _idempotency:
+        existing = repository.get_by_id(db, _idempotency[idempotency_key])
+        if existing is not None:
+            return present_one(db, existing)
+    created = repository.create(db, data, author_id=author.id)
+    if idempotency_key:
+        _idempotency[idempotency_key] = created.id
+    cache_clear()
+    background_tasks.add_task(_notify_new_post, created.title)
+    background_tasks.add_task(_publish_post_created, created.id)
+    return present_one(db, created)
+
+
+def update_post(db: Session, post_id: int, data: PostPatch, current_user: User) -> PostResponse:
+    existing = get_post_or_404(db, post_id)
+    _check_owner(existing, current_user)
+    updated = repository.update(db, existing, data)
+    cache_clear()
+    return present_one(db, updated)
 
 
 def delete_post(db: Session, post_id: int, current_user: User) -> None:
-    existing = get_post_or_404(db, post_id)  # 존재 확인
-    _check_owner(existing, current_user)  # 소유자 확인
-    repository.delete(db, existing)  # 삭제
+    existing = get_post_or_404(db, post_id)
+    _check_owner(existing, current_user)
+    repository.delete(db, existing)
+    cache_clear()

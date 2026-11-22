@@ -17,6 +17,10 @@ venv/
 # Pytest
 .pytest_cache/
 
+# Uploads and local backups created by the study app
+uploads/
+backups/
+
 # OS
 .DS_Store
 Thumbs.db
